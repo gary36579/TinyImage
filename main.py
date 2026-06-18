@@ -1,4 +1,5 @@
 import os
+import sys
 import zipfile
 import argparse
 import py7zr
@@ -319,15 +320,26 @@ def process_7z_with_tmp(input_path, output_path, executor, png_to_webp=False, jp
 
 def main():
     parser = argparse.ArgumentParser(description="TinyImage - Image Optimization Tool")
+    parser.add_argument('--dir', help="Set both input and output directory (cannot be used with --input or --output)")
+    parser.add_argument('--input', default='input', help="Input directory (default: input)")
+    parser.add_argument('--output', default='output', help="Output directory (default: output)")
     parser.add_argument('--png-to-webp', action='store_true', default=False, help="Convert PNG images to WebP format")
     parser.add_argument('--jpg-to-webp', action='store_true', default=False, help="Convert JPEG images to WebP format")
+    parser.add_argument('--delete-original', action='store_true', default=False, help="Delete original files after compression")
     args = parser.parse_args()
 
     png_to_webp = args.png_to_webp
     jpg_to_webp = args.jpg_to_webp
+    delete_original = args.delete_original
 
-    input_dir = "input"
-    output_dir = "output"
+    if args.dir:
+        if '--input' in sys.argv or '--output' in sys.argv:
+            parser.error("--dir cannot be used with --input or --output")
+        input_dir = args.dir
+        output_dir = args.dir
+    else:
+        input_dir = args.input
+        output_dir = args.output
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -337,7 +349,7 @@ def main():
     print(" - Multi-Core Turbo Speed Version")
     print("="*100)
 
-    files_to_process = os.listdir(input_dir)
+    files_to_process = sorted(os.listdir(input_dir))
 
     if not files_to_process:
         print("Input folder is empty.")
@@ -390,6 +402,10 @@ def main():
                         print(f"[Image] {filename} -> {final_filename}: {format_size(o)} -> {format_size(n)} (-{r:.1f}%)")
                         total_bytes_orig += o
                         total_bytes_new += n
+                        if delete_original:
+                            input_path = os.path.join(input_dir, filename)
+                            os.remove(input_path)
+                            print(f"  [Deleted] {filename}")
                     else:
                         print(f"[Error] Failed to process {filename}")
                 except Exception as exc:
@@ -409,6 +425,10 @@ def main():
                 o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp)
                 total_bytes_orig += o
                 total_bytes_new += n
+
+            if delete_original:
+                os.remove(input_path)
+                print(f"[Deleted] {filename}")
 
     total_elapsed = time.time() - overall_start_time
 
