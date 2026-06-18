@@ -9,9 +9,22 @@ import time
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+try:
+    import send2trash
+    HAS_SEND2TRASH = True
+except ImportError:
+    HAS_SEND2TRASH = False
+
 IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 ARC_EXTENSIONS = ('.zip', '.7z')
 SUFFIX = "[minify]"
+
+
+def remove_file(path, soft):
+    if soft:
+        send2trash.send2trash(path)
+    else:
+        os.remove(path)
 
 
 def format_size(size):
@@ -325,12 +338,20 @@ def main():
     parser.add_argument('--output', default='output', help="Output directory (default: output)")
     parser.add_argument('--png-to-webp', action='store_true', default=False, help="Convert PNG images to WebP format")
     parser.add_argument('--jpg-to-webp', action='store_true', default=False, help="Convert JPEG images to WebP format")
-    parser.add_argument('--delete-original', action='store_true', default=False, help="Delete original files after compression")
+
+    del_group = parser.add_mutually_exclusive_group()
+    del_group.add_argument('--delete-original', action='store_true', default=False, help="Permanently delete original files after compression")
+    del_group.add_argument('--soft-delete-original', action='store_true', default=False, help="Move original files to trash instead of permanent delete")
+
     args = parser.parse_args()
 
     png_to_webp = args.png_to_webp
     jpg_to_webp = args.jpg_to_webp
     delete_original = args.delete_original
+    soft_delete = args.soft_delete_original
+
+    if soft_delete and not HAS_SEND2TRASH:
+        parser.error("--soft-delete-original requires send2trash. Install with: pip install send2trash")
 
     if args.dir:
         if '--input' in sys.argv or '--output' in sys.argv:
@@ -402,10 +423,11 @@ def main():
                         print(f"[Image] {filename} -> {final_filename}: {format_size(o)} -> {format_size(n)} (-{r:.1f}%)")
                         total_bytes_orig += o
                         total_bytes_new += n
-                        if delete_original:
+                        if delete_original or soft_delete:
                             input_path = os.path.join(input_dir, filename)
-                            os.remove(input_path)
-                            print(f"  [Deleted] {filename}")
+                            remove_file(input_path, soft_delete)
+                            label = "Moved to trash" if soft_delete else "Deleted"
+                            print(f"  [{label}] {filename}")
                     else:
                         print(f"[Error] Failed to process {filename}")
                 except Exception as exc:
@@ -426,9 +448,10 @@ def main():
                 total_bytes_orig += o
                 total_bytes_new += n
 
-            if delete_original:
-                os.remove(input_path)
-                print(f"[Deleted] {filename}")
+            if delete_original or soft_delete:
+                remove_file(input_path, soft_delete)
+                label = "Moved to trash" if soft_delete else "Deleted"
+                print(f"[{label}] {filename}")
 
     total_elapsed = time.time() - overall_start_time
 
