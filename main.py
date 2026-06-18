@@ -370,30 +370,34 @@ def main():
     print(" - Multi-Core Turbo Speed Version")
     print("="*100)
 
-    files_to_process = sorted(os.listdir(input_dir))
+    overall_start_time = time.time()
 
-    if not files_to_process:
+    # 使用 os.walk 遞迴掃描所有子資料夾
+    image_tasks = []
+    archive_tasks = []
+    found_any = False
+
+    for root, dirs, files in os.walk(input_dir):
+        for filename in sorted(files):
+            if SUFFIX in filename:
+                rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
+                print(f"[Skipped] {rel_path} (already processed)")
+                continue
+
+            ext = os.path.splitext(filename)[1].lower()
+            rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
+
+            if ext in IMG_EXTENSIONS:
+                image_tasks.append((root, filename, rel_path))
+                found_any = True
+            elif ext in ARC_EXTENSIONS:
+                archive_tasks.append((root, filename, rel_path))
+                found_any = True
+
+    if not found_any:
         print("Input folder is empty.")
 
         return
-
-    overall_start_time = time.time()
-
-    # 區分「獨立圖片」與「壓縮檔」
-    image_tasks = []
-    archive_tasks = []
-
-    for filename in files_to_process:
-        if SUFFIX in filename:
-            print(f"[Skipped] {filename} (already processed)")
-            continue
-
-        ext = os.path.splitext(filename)[1].lower()
-
-        if ext in IMG_EXTENSIONS:
-            image_tasks.append(filename)
-        elif ext in ARC_EXTENSIONS:
-            archive_tasks.append((filename, ext))
 
     # 使用統一的執行池，避免重複創建資源
     total_bytes_orig = 0
@@ -405,39 +409,43 @@ def main():
             print(f"\n[Parallel] Starting multi-core compression for {len(image_tasks)} images...")
             future_to_file = {}
 
-            for filename in image_tasks:
-                input_path = os.path.join(input_dir, filename)
+            for root, filename, rel_path in image_tasks:
+                input_path = os.path.join(root, filename)
                 out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
-                output_path = os.path.join(output_dir, out_filename)
+                out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
+                os.makedirs(out_rel_dir, exist_ok=True)
+                output_path = os.path.join(out_rel_dir, out_filename)
                 future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp)
-                future_to_file[future] = (filename, out_filename)
+                future_to_file[future] = (rel_path, out_filename, input_path)
 
             for future in as_completed(future_to_file):
-                filename, out_filename = future_to_file[future]
+                rel_path, out_filename, input_path = future_to_file[future]
 
                 try:
                     success, o, n, r, final_output_path = future.result()
 
                     if success:
                         final_filename = os.path.basename(final_output_path)
-                        print(f"[Image] {filename} -> {final_filename}: {format_size(o)} -> {format_size(n)} (-{r:.1f}%)")
+                        print(f"[Image] {rel_path} -> {final_filename}: {format_size(o)} -> {format_size(n)} (-{r:.1f}%)")
                         total_bytes_orig += o
                         total_bytes_new += n
                         if delete_original or soft_delete:
-                            input_path = os.path.join(input_dir, filename)
                             remove_file(input_path, soft_delete)
                             label = "Moved to trash" if soft_delete else "Deleted"
-                            print(f"  [{label}] {filename}")
+                            print(f"  [{label}] {rel_path}")
                     else:
-                        print(f"[Error] Failed to process {filename}")
+                        print(f"[Error] Failed to process {rel_path}")
                 except Exception as exc:
-                    print(f"[Error] {filename} generated an exception: {exc}")
+                    print(f"[Error] {rel_path} generated an exception: {exc}")
 
         # ---- 階段 2：處理壓縮檔（內部圖片會並行提交至同一個 executor） ----
-        for filename, ext in archive_tasks:
-            input_path = os.path.join(input_dir, filename)
+        for root, filename, rel_path in archive_tasks:
+            input_path = os.path.join(root, filename)
+            ext = os.path.splitext(filename)[1].lower()
             out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
-            output_path = os.path.join(output_dir, out_filename)
+            out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
+            os.makedirs(out_rel_dir, exist_ok=True)
+            output_path = os.path.join(out_rel_dir, out_filename)
 
             if ext == '.zip':
                 o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp)
@@ -451,7 +459,7 @@ def main():
             if delete_original or soft_delete:
                 remove_file(input_path, soft_delete)
                 label = "Moved to trash" if soft_delete else "Deleted"
-                print(f"[{label}] {filename}")
+                print(f"[{label}] {rel_path}")
 
     total_elapsed = time.time() - overall_start_time
 
