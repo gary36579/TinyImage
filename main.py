@@ -8,6 +8,9 @@ import tempfile
 import time
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
+import colorama
+colorama.init()
 
 try:
     import send2trash
@@ -68,9 +71,9 @@ def compress_image_stream(img_bytes, fmt, exif=None, icc_profile=None, png_to_we
             if fmt == 'JPEG':
                 save_kwargs.update({'quality': 80, 'progressive': True})
             elif fmt == 'WEBP':
-                save_kwargs.update({'quality': 80, 'method': 4})
+                save_kwargs.update({'quality': 80, 'method': 6})
             elif fmt == 'PNG':
-                save_kwargs['compress_level'] = 3
+                save_kwargs['compress_level'] = 9
 
             out_io = io.BytesIO()
             img.save(out_io, format=fmt, **save_kwargs)
@@ -156,7 +159,6 @@ def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=
 def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, jpg_to_webp=False):
     """全記憶體優化版：針對 ZIP 進行流式壓縮，不釋放至硬碟"""
     filename = os.path.basename(input_path)
-    print(f"\n[Archive] Processing (Memory Stream): {filename}...", end='', flush=True)
     start_time = time.time()
 
     total_orig = 0
@@ -168,7 +170,7 @@ def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, 
             # 檢查加密
             for info in z_in.infolist():
                 if info.flag_bits & 0x1:
-                    print(f"\n  [Skipped] {filename} is encrypted.")
+                    print(f"\n  {colorama.Fore.LIGHTBLACK_EX}[Skipped] {filename} is encrypted.{colorama.Style.RESET_ALL}")
                     return 0, 0
 
             with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as z_out:
@@ -228,31 +230,29 @@ def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, 
                         img_count += 1
 
         elapsed = time.time() - start_time
-        print(f" Done ({elapsed:.2f}s)")
 
         if img_count > 0:
             total_r = (1 - total_new / total_orig) * 100 if total_orig > 0 else 0
-            print(f"  Summary: {img_count} images optimized. {format_size(total_orig)} -> {format_size(total_new)} (-{total_r:.1f}%)")
+            tqdm.write(f"  Summary: {filename} — {img_count} images, {format_size(total_orig)} -> {format_size(total_new)} (-{total_r:.1f}%) [{elapsed:.2f}s]")
         else:
-            print(f"  Summary: No images found to optimize.")
+            tqdm.write(f"  Summary: {filename} — No images found to optimize.")
 
         return total_orig, total_new
     except Exception as e:
-        print(f"\n  [Error] {filename}: {e}")
+        tqdm.write(f"  [Error] {filename}: {e}")
         return 0, 0
 
 
 def process_7z_with_tmp(input_path, output_path, executor, png_to_webp=False, jpg_to_webp=False):
     """7z 格式保持暫存區，但內部檔案複製改用效率優化"""
     filename = os.path.basename(input_path)
-    print(f"\n[Archive] Processing (7z): {filename}...", end='', flush=True)
     start_time = time.time()
 
     with tempfile.TemporaryDirectory() as tmp_in, tempfile.TemporaryDirectory() as tmp_out:
         try:
             with py7zr.SevenZipFile(input_path, mode='r') as s:
                 if s.password_protected:
-                    print(f"\n  [Skipped] {filename} is encrypted.")
+                    print(f"\n  {colorama.Fore.LIGHTBLACK_EX}[Skipped] {filename} is encrypted.{colorama.Style.RESET_ALL}")
                     return 0, 0
 
                 s.extractall(tmp_in)
@@ -317,17 +317,16 @@ def process_7z_with_tmp(input_path, output_path, executor, png_to_webp=False, jp
                         s.write(full_path, arcname=rel_path)
 
             elapsed = time.time() - start_time
-            print(f" Done ({elapsed:.2f}s)")
 
             if img_count > 0:
                 total_r = (1 - total_new / total_orig) * 100 if total_orig > 0 else 0
-                print(f"       Summary: {img_count} images optimized. {format_size(total_orig)} -> {format_size(total_new)} (-{total_r:.1f}%)")
+                tqdm.write(f"  Summary: {filename} — {img_count} images, {format_size(total_orig)} -> {format_size(total_new)} (-{total_r:.1f}%) [{elapsed:.2f}s]")
             else:
-                print(f"       Summary: No images found to optimize.")
+                tqdm.write(f"  Summary: {filename} — No images found to optimize.")
 
             return total_orig, total_new
         except Exception as e:
-            print(f"\n  [Error] {filename}: {e}")
+            tqdm.write(f"  [Error] {filename}: {e}")
             return 0, 0
 
 
@@ -365,10 +364,10 @@ def main():
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    print("="*100)
-    print("TinyImage - Image Optimization Tool")
-    print(" - Multi-Core Turbo Speed Version")
-    print("="*100)
+    print(f"{colorama.Fore.CYAN}{'='*100}{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.CYAN}TinyImage - Image Optimization Tool{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.CYAN} - Multi-Core Turbo Speed Version{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.CYAN}{'='*100}{colorama.Style.RESET_ALL}")
 
     overall_start_time = time.time()
 
@@ -381,7 +380,7 @@ def main():
         for filename in sorted(files):
             if SUFFIX in filename:
                 rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
-                print(f"[Skipped] {rel_path} (already processed)")
+                print(f"{colorama.Fore.LIGHTBLACK_EX}[Skipped] {rel_path} (already processed){colorama.Style.RESET_ALL}")
                 continue
 
             ext = os.path.splitext(filename)[1].lower()
@@ -395,7 +394,7 @@ def main():
                 found_any = True
 
     if not found_any:
-        print("Input folder is empty.")
+        print(f"{colorama.Fore.YELLOW}Input folder is empty.{colorama.Style.RESET_ALL}")
 
         return
 
@@ -403,75 +402,83 @@ def main():
     total_bytes_orig = 0
     total_bytes_new = 0
 
+    total_items = len(image_tasks) + len(archive_tasks)
+
     with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        # ---- 階段 1：處理獨立圖片 ----
-        if image_tasks:
-            print(f"\n[Parallel] Starting multi-core compression for {len(image_tasks)} images...")
-            future_to_file = {}
-
-            for root, filename, rel_path in image_tasks:
-                input_path = os.path.join(root, filename)
-                out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
-                out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
-                os.makedirs(out_rel_dir, exist_ok=True)
-                output_path = os.path.join(out_rel_dir, out_filename)
-                future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp)
-                future_to_file[future] = (rel_path, out_filename, input_path)
-
-            for future in as_completed(future_to_file):
-                rel_path, out_filename, input_path = future_to_file[future]
-
-                try:
-                    success, o, n, r, final_output_path = future.result()
-
-                    if success:
-                        final_filename = os.path.basename(final_output_path)
-                        print(f"[Image] {rel_path} -> {final_filename}: {format_size(o)} -> {format_size(n)} (-{r:.1f}%)")
-                        total_bytes_orig += o
-                        total_bytes_new += n
-                        if delete_original or soft_delete:
-                            remove_file(input_path, soft_delete)
-                            label = "Moved to trash" if soft_delete else "Deleted"
-                            print(f"  [{label}] {rel_path}")
-                    else:
-                        print(f"[Error] Failed to process {rel_path}")
-                except Exception as exc:
-                    print(f"[Error] {rel_path} generated an exception: {exc}")
-
-        # ---- 階段 2：處理壓縮檔（內部圖片會並行提交至同一個 executor） ----
-        for root, filename, rel_path in archive_tasks:
+        future_to_file = {}
+        for root, filename, rel_path in image_tasks:
             input_path = os.path.join(root, filename)
-            ext = os.path.splitext(filename)[1].lower()
             out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
             out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
             os.makedirs(out_rel_dir, exist_ok=True)
             output_path = os.path.join(out_rel_dir, out_filename)
+            future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp)
+            future_to_file[future] = (rel_path, out_filename, input_path)
 
-            if ext == '.zip':
-                o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp)
-                total_bytes_orig += o
-                total_bytes_new += n
-            elif ext == '.7z':
-                o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp)
-                total_bytes_orig += o
-                total_bytes_new += n
+        with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
+            with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
+                # 階段 1：處理獨立圖片（並行完成時即時更新進度條）
+                for future in as_completed(future_to_file):
+                    rel_path, out_filename, input_path = future_to_file[future]
+                    status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
 
-            if delete_original or soft_delete:
-                remove_file(input_path, soft_delete)
-                label = "Moved to trash" if soft_delete else "Deleted"
-                print(f"[{label}] {rel_path}")
+                    try:
+                        success, o, n, r, final_output_path = future.result()
+
+                        if success:
+                            final_filename = os.path.basename(final_output_path)
+                            tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
+                            total_bytes_orig += o
+                            total_bytes_new += n
+                            if delete_original or soft_delete:
+                                remove_file(input_path, soft_delete)
+                                label = "Moved to trash" if soft_delete else "Deleted"
+                                tqdm.write(f"{colorama.Fore.RED}       [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+                        else:
+                            tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}")
+                    except Exception as exc:
+                        tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}: {exc}")
+
+                    pbar.update(1)
+
+                # 階段 2：處理壓縮檔（內部圖片會並行提交至同一個 executor）
+                for root, filename, rel_path in archive_tasks:
+                    status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+
+                    input_path = os.path.join(root, filename)
+                    ext = os.path.splitext(filename)[1].lower()
+                    out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
+                    out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
+                    os.makedirs(out_rel_dir, exist_ok=True)
+                    output_path = os.path.join(out_rel_dir, out_filename)
+
+                    if ext == '.zip':
+                        o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp)
+                        total_bytes_orig += o
+                        total_bytes_new += n
+                    elif ext == '.7z':
+                        o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp)
+                        total_bytes_orig += o
+                        total_bytes_new += n
+
+                    if delete_original or soft_delete:
+                        remove_file(input_path, soft_delete)
+                        label = "Moved to trash" if soft_delete else "Deleted"
+                        tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+
+                    pbar.update(1)
 
     total_elapsed = time.time() - overall_start_time
 
-    print("\n" + "="*100)
-    print(f"All tasks completed in {total_elapsed:.2f}s.")
+    print(f"\n{colorama.Fore.CYAN}{'='*100}{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.GREEN}All tasks completed in {total_elapsed:.2f}s.{colorama.Style.RESET_ALL}")
 
     if total_bytes_orig > 0:
         total_saved = total_bytes_orig - total_bytes_new
         reduction_percentage = (total_saved / total_bytes_orig) * 100
-        print(f"Total size optimized: {format_size(total_bytes_orig)} -> {format_size(total_bytes_new)} (-{reduction_percentage:.2f}%, saved {format_size(total_saved)})")
+        print(f"{colorama.Fore.GREEN}Total size optimized: {format_size(total_bytes_orig)} -> {format_size(total_bytes_new)} (-{reduction_percentage:.2f}%, saved {format_size(total_saved)}){colorama.Style.RESET_ALL}")
 
-    print("="*100)
+    print(f"{colorama.Fore.CYAN}{'='*100}{colorama.Style.RESET_ALL}")
 
 
 if __name__ == "__main__":
