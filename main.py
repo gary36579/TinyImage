@@ -146,7 +146,7 @@ def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=
             return False, 0, 0, 0, output_path
 
 
-def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, jpg_to_webp=False):
+def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False):
     """全記憶體優化版：針對 ZIP 進行流式壓縮，不釋放至硬碟"""
     filename = os.path.basename(input_path)
     start_time = time.time()
@@ -157,7 +157,6 @@ def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, 
 
     try:
         with zipfile.ZipFile(input_path, 'r') as z_in:
-            # 檢查加密
             for info in z_in.infolist():
                 if info.flag_bits & 0x1:
                     print(f"\n  {colorama.Fore.LIGHTBLACK_EX}[Skipped] {filename} is encrypted.{colorama.Style.RESET_ALL}")
@@ -165,6 +164,7 @@ def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, 
 
             with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as z_out:
                 futures = {}
+                pending = []
 
                 for item in z_in.infolist():
                     if item.is_dir():
@@ -179,44 +179,56 @@ def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, 
                     out_rel_path = get_output_name(item.filename, png_to_webp, jpg_to_webp)
 
                     if item.filename.lower().endswith(IMG_EXTENSIONS):
-                        # 獲取圖片格式
                         try:
                             with Image.open(io.BytesIO(orig_data)) as img:
                                 fmt = img.format
                                 exif = img.info.get('exif')
                                 icc_profile = img.info.get('icc_profile')
 
-                            future = executor.submit(compress_image_stream, orig_data, fmt, exif, icc_profile, png_to_webp, jpg_to_webp)
-                            futures[future] = (item.filename, out_rel_path, len(orig_data), orig_data)
+                            if executor:
+                                future = executor.submit(compress_image_stream, orig_data, fmt, exif, icc_profile, png_to_webp, jpg_to_webp)
+                                futures[future] = (item.filename, out_rel_path, len(orig_data), orig_data)
+                            else:
+                                pending.append((item.filename, out_rel_path, orig_data, fmt, exif, icc_profile))
                         except Exception:
                             z_out.writestr(out_rel_path, orig_data)
                     else:
-                        # 非圖片直接複製
                         z_out.writestr(out_rel_path, orig_data)
 
-                # 實時寫入壓縮後的圖片
-                for future in as_completed(futures):
-                    orig_filename, out_rel_path, orig_size, orig_data = futures[future]
-
-                    try:
-                        new_data, is_reverted = future.result()
-                        new_size = len(new_data)
-
-                        if is_reverted:
+                if executor:
+                    for future in as_completed(futures):
+                        orig_filename, out_rel_path, orig_size, orig_data = futures[future]
+                        try:
+                            new_data, is_reverted = future.result()
+                            new_size = len(new_data)
+                            final_out_path = get_output_name(orig_filename, png_to_webp=False, jpg_to_webp=False) if is_reverted else out_rel_path
+                            z_out.writestr(final_out_path, new_data)
+                            total_orig += orig_size
+                            total_new += new_size
+                            img_count += 1
+                        except Exception:
                             final_out_path = get_output_name(orig_filename, png_to_webp=False, jpg_to_webp=False)
-                        else:
-                            final_out_path = out_rel_path
-
-                        z_out.writestr(final_out_path, new_data)
-                        total_orig += orig_size
-                        total_new += new_size
-                        img_count += 1
-                    except Exception:
-                        final_out_path = get_output_name(orig_filename, png_to_webp=False, jpg_to_webp=False)
-                        z_out.writestr(final_out_path, orig_data)
-                        total_orig += orig_size
-                        total_new += orig_size
-                        img_count += 1
+                            z_out.writestr(final_out_path, orig_data)
+                            total_orig += orig_size
+                            total_new += orig_size
+                            img_count += 1
+                else:
+                    for orig_filename, out_rel_path, orig_data, fmt, exif, icc_profile in pending:
+                        orig_size = len(orig_data)
+                        try:
+                            new_data, is_reverted = compress_image_stream(orig_data, fmt, exif, icc_profile, png_to_webp, jpg_to_webp)
+                            new_size = len(new_data)
+                            final_out_path = get_output_name(orig_filename, png_to_webp=False, jpg_to_webp=False) if is_reverted else out_rel_path
+                            z_out.writestr(final_out_path, new_data)
+                            total_orig += orig_size
+                            total_new += new_size
+                            img_count += 1
+                        except Exception:
+                            final_out_path = get_output_name(orig_filename, png_to_webp=False, jpg_to_webp=False)
+                            z_out.writestr(final_out_path, orig_data)
+                            total_orig += orig_size
+                            total_new += orig_size
+                            img_count += 1
 
         elapsed = time.time() - start_time
 
@@ -232,7 +244,7 @@ def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, 
         return 0, 0
 
 
-def process_7z_with_tmp(input_path, output_path, executor, png_to_webp=False, jpg_to_webp=False):
+def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False):
     """7z 格式保持暫存區，但內部檔案複製改用效率優化"""
     filename = os.path.basename(input_path)
     start_time = time.time()
@@ -251,7 +263,6 @@ def process_7z_with_tmp(input_path, output_path, executor, png_to_webp=False, jp
             img_count = 0
             image_tasks = []
 
-            # 收集任務
             for root, dirs, files in os.walk(tmp_in):
                 for f in files:
                     src_f = os.path.join(root, f)
@@ -273,30 +284,43 @@ def process_7z_with_tmp(input_path, output_path, executor, png_to_webp=False, jp
                     else:
                         shutil.copy2(src_f, dst_f)
 
-            # 並行處理圖片
             if image_tasks:
-                futures = {executor.submit(compress_image_file, src, dst, png_to_webp, jpg_to_webp): (src, dst) for src, dst in image_tasks}
-
-                for future in as_completed(futures):
-                    success, o, n, r, final_path = future.result()
-
-                    if success:
-                        total_orig += o
-                        total_new += n
-                        img_count += 1
-                    else:
-                        src, dst = futures[future]
-                        orig_ext = os.path.splitext(src)[1]
-                        dst_name, dst_ext = os.path.splitext(dst)
-                        real_dst = dst_name + orig_ext
-
-                        if os.path.exists(dst) and dst != real_dst:
-                            try:
-                                os.remove(dst)
-                            except Exception:
-                                pass
-
-                        shutil.copy2(src, real_dst)
+                if executor:
+                    futures = {executor.submit(compress_image_file, src, dst, png_to_webp, jpg_to_webp): (src, dst) for src, dst in image_tasks}
+                    for future in as_completed(futures):
+                        success, o, n, r, final_path = future.result()
+                        if success:
+                            total_orig += o
+                            total_new += n
+                            img_count += 1
+                        else:
+                            src, dst = futures[future]
+                            orig_ext = os.path.splitext(src)[1]
+                            dst_name, dst_ext = os.path.splitext(dst)
+                            real_dst = dst_name + orig_ext
+                            if os.path.exists(dst) and dst != real_dst:
+                                try:
+                                    os.remove(dst)
+                                except Exception:
+                                    pass
+                            shutil.copy2(src, real_dst)
+                else:
+                    for src, dst in image_tasks:
+                        success, o, n, r, final_path = compress_image_file(src, dst, png_to_webp, jpg_to_webp)
+                        if success:
+                            total_orig += o
+                            total_new += n
+                            img_count += 1
+                        else:
+                            orig_ext = os.path.splitext(src)[1]
+                            dst_name, dst_ext = os.path.splitext(dst)
+                            real_dst = dst_name + orig_ext
+                            if os.path.exists(dst) and dst != real_dst:
+                                try:
+                                    os.remove(dst)
+                                except Exception:
+                                    pass
+                            shutil.copy2(src, real_dst)
 
             with py7zr.SevenZipFile(output_path, 'w') as s:
                 for root, dirs, files in os.walk(tmp_out):
@@ -327,6 +351,10 @@ def main():
     parser.add_argument('--png-to-webp', action='store_true', default=False, help="Convert PNG images to WebP format")
     parser.add_argument('--jpg-to-webp', action='store_true', default=False, help="Convert JPEG images to WebP format")
 
+    exec_group = parser.add_mutually_exclusive_group()
+    exec_group.add_argument('--sequential', action='store_true', default=False, help="Disable multiprocessing, process images sequentially")
+    exec_group.add_argument('--workers', type=int, default=None, help="Maximum number of parallel workers (default: CPU core count)")
+
     del_group = parser.add_mutually_exclusive_group()
     del_group.add_argument('--delete-original', action='store_true', default=False, help="Permanently delete original files after compression")
     del_group.add_argument('--soft-delete-original', action='store_true', default=False, help="Move original files to trash instead of permanent delete")
@@ -337,9 +365,18 @@ def main():
     jpg_to_webp = args.jpg_to_webp
     delete_original = args.delete_original
     soft_delete = args.soft_delete_original
+    sequential = args.sequential
+    workers = args.workers
 
     if soft_delete and not HAS_SEND2TRASH:
         parser.error("--soft-delete-original requires send2trash. Install with: pip install send2trash")
+
+    if workers is not None:
+        if workers < 1:
+            parser.error("--workers must be at least 1")
+        workers = min(workers, os.cpu_count())
+    else:
+        workers = os.cpu_count()
 
     if args.dir:
         if '--input' in sys.argv or '--output' in sys.argv:
@@ -388,33 +425,25 @@ def main():
 
         return
 
-    # 使用統一的執行池，避免重複創建資源
     total_bytes_orig = 0
     total_bytes_new = 0
 
     total_items = len(image_tasks) + len(archive_tasks)
 
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        future_to_file = {}
-        for root, filename, rel_path in image_tasks:
-            input_path = os.path.join(root, filename)
-            out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
-            out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
-            os.makedirs(out_rel_dir, exist_ok=True)
-            output_path = os.path.join(out_rel_dir, out_filename)
-            future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp)
-            future_to_file[future] = (rel_path, out_filename, input_path)
-
+    if sequential:
         with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
             with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
-                # 階段 1：處理獨立圖片（並行完成時即時更新進度條）
-                for future in as_completed(future_to_file):
-                    rel_path, out_filename, input_path = future_to_file[future]
+                for root, filename, rel_path in image_tasks:
+                    input_path = os.path.join(root, filename)
+                    out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
+                    out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
+                    os.makedirs(out_rel_dir, exist_ok=True)
+                    output_path = os.path.join(out_rel_dir, out_filename)
+
                     status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
 
                     try:
-                        success, o, n, r, final_output_path = future.result()
-
+                        success, o, n, r, final_output_path = compress_image_file(input_path, output_path, png_to_webp, jpg_to_webp)
                         if success:
                             final_filename = os.path.basename(final_output_path)
                             tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
@@ -431,10 +460,8 @@ def main():
 
                     pbar.update(1)
 
-                # 階段 2：處理壓縮檔（內部圖片會並行提交至同一個 executor）
                 for root, filename, rel_path in archive_tasks:
                     status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-
                     input_path = os.path.join(root, filename)
                     ext = os.path.splitext(filename)[1].lower()
                     out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
@@ -443,11 +470,11 @@ def main():
                     output_path = os.path.join(out_rel_dir, out_filename)
 
                     if ext == '.zip':
-                        o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp)
+                        o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp)
                         total_bytes_orig += o
                         total_bytes_new += n
                     elif ext == '.7z':
-                        o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp)
+                        o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp)
                         total_bytes_orig += o
                         total_bytes_new += n
 
@@ -457,6 +484,67 @@ def main():
                         tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
 
                     pbar.update(1)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_to_file = {}
+            for root, filename, rel_path in image_tasks:
+                input_path = os.path.join(root, filename)
+                out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
+                out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
+                os.makedirs(out_rel_dir, exist_ok=True)
+                output_path = os.path.join(out_rel_dir, out_filename)
+                future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp)
+                future_to_file[future] = (rel_path, out_filename, input_path)
+
+            with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
+                with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
+                    for future in as_completed(future_to_file):
+                        rel_path, out_filename, input_path = future_to_file[future]
+                        status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+
+                        try:
+                            success, o, n, r, final_output_path = future.result()
+
+                            if success:
+                                final_filename = os.path.basename(final_output_path)
+                                tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
+                                total_bytes_orig += o
+                                total_bytes_new += n
+                                if delete_original or soft_delete:
+                                    remove_file(input_path, soft_delete)
+                                    label = "Moved to trash" if soft_delete else "Deleted"
+                                    tqdm.write(f"{colorama.Fore.RED}       [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+                            else:
+                                tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}")
+                        except Exception as exc:
+                            tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}: {exc}")
+
+                        pbar.update(1)
+
+                    for root, filename, rel_path in archive_tasks:
+                        status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+                        input_path = os.path.join(root, filename)
+                        ext = os.path.splitext(filename)[1].lower()
+                        out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
+                        out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
+                        os.makedirs(out_rel_dir, exist_ok=True)
+                        output_path = os.path.join(out_rel_dir, out_filename)
+
+                        if ext == '.zip':
+                            o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp)
+                            total_bytes_orig += o
+                            total_bytes_new += n
+                        elif ext == '.7z':
+                            o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp)
+                            total_bytes_orig += o
+                            total_bytes_new += n
+
+                        if delete_original or soft_delete:
+                            remove_file(input_path, soft_delete)
+                            label = "Moved to trash" if soft_delete else "Deleted"
+                            tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+
+                        pbar.update(1)
 
     total_elapsed = time.time() - overall_start_time
 

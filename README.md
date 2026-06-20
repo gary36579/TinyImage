@@ -4,7 +4,7 @@ Batch image compression tool with parallel processing, archive support, and form
 
 ## Features
 
-- **Multi-core parallel processing** — uses `ProcessPoolExecutor` with `os.cpu_count()` workers
+- **Configurable parallel processing** — uses `ProcessPoolExecutor` with `--workers N` (default: `os.cpu_count()`), or `--sequential` for single-threaded mode
 - **Archive support** — processes images inside ZIP and 7z archives, preserving internal structure
 - **Encrypted archive detection** — password-protected archives are silently skipped
 - **Format conversion** — PNG → WebP and JPEG → WebP via `--png-to-webp` / `--jpg-to-webp`
@@ -40,6 +40,8 @@ python main.py --soft-delete-original
 | `--dir DIR` | — | Set both input and output to the same directory (cannot be used with `--input` or `--output`) |
 | `--png-to-webp` | `false` | Convert PNG images to WebP |
 | `--jpg-to-webp` | `false` | Convert JPEG images to WebP |
+| `--sequential` | `false` | Disable multiprocessing, process images one by one |
+| `--workers N` | CPU count | Maximum parallel workers (mutually exclusive with `--sequential`) |
 | `--delete-original` | `false` | Permanently delete original files after compression |
 | `--soft-delete-original` | `false` | Move original files to trash (requires `send2trash`, mutually exclusive with `--delete-original`) |
 
