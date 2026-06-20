@@ -10,6 +10,7 @@ from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 import colorama
+import io
 colorama.init()
 
 try:
@@ -24,10 +25,23 @@ SUFFIX = "[minify]"
 
 
 def remove_file(path, soft):
-    if soft:
+    if soft and HAS_SEND2TRASH:
         send2trash.send2trash(path)
     else:
         os.remove(path)
+
+
+def fallback_copy(input_path, output_path):
+    orig_ext = os.path.splitext(input_path)[1]
+    out_name, out_ext = os.path.splitext(output_path)
+    real_output_path = out_name + orig_ext
+    if os.path.exists(output_path) and output_path != real_output_path:
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
+    shutil.copy2(input_path, real_output_path)
+    return real_output_path
 
 
 def format_size(size):
@@ -51,8 +65,6 @@ def get_output_name(filename, png_to_webp=False, jpg_to_webp=False):
 
 def compress_image_stream(img_bytes, fmt, exif=None, icc_profile=None, png_to_webp=False, jpg_to_webp=False):
     """在記憶體中直接壓縮圖片，不產生實體檔案，用於縮短 Zip 處理時間"""
-    import io
-
     try:
         if fmt == 'PNG' and png_to_webp:
             fmt = 'WEBP'
@@ -83,7 +95,7 @@ def compress_image_stream(img_bytes, fmt, exif=None, icc_profile=None, png_to_we
                 return img_bytes, True
 
             return compressed_data, False
-    except:
+    except Exception:
         return img_bytes, True
 
 
@@ -121,36 +133,14 @@ def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=
         new_size = os.path.getsize(output_path)
 
         if new_size >= orig_size:
-            orig_ext = os.path.splitext(input_path)[1]
-            out_name, out_ext = os.path.splitext(output_path)
-            real_output_path = out_name + orig_ext
-
-            if os.path.exists(output_path) and output_path != real_output_path:
-                try:
-                    os.remove(output_path)
-                except Exception:
-                    pass
-
-            shutil.copy2(input_path, real_output_path)
-
+            real_output_path = fallback_copy(input_path, output_path)
             return True, orig_size, orig_size, 0.0, real_output_path
 
         return True, orig_size, new_size, (1 - new_size / orig_size) * 100, output_path
     except Exception as e:
         try:
             orig_size = os.path.getsize(input_path)
-            orig_ext = os.path.splitext(input_path)[1]
-            out_name, out_ext = os.path.splitext(output_path)
-            real_output_path = out_name + orig_ext
-
-            if os.path.exists(output_path) and output_path != real_output_path:
-                try:
-                    os.remove(output_path)
-                except Exception:
-                    pass
-
-            shutil.copy2(input_path, real_output_path)
-
+            real_output_path = fallback_copy(input_path, output_path)
             return True, orig_size, orig_size, 0.0, real_output_path
         except Exception:
             return False, 0, 0, 0, output_path
@@ -175,7 +165,6 @@ def process_zip_in_memory(input_path, output_path, executor, png_to_webp=False, 
 
             with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as z_out:
                 futures = {}
-                import io
 
                 for item in z_in.infolist():
                     if item.is_dir():
@@ -364,10 +353,11 @@ def main():
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    print(f"{colorama.Fore.CYAN}{'='*100}{colorama.Style.RESET_ALL}")
+    term_width = shutil.get_terminal_size().columns
+    print(f"{colorama.Fore.CYAN}{'=' * term_width}{colorama.Style.RESET_ALL}")
     print(f"{colorama.Fore.CYAN}TinyImage - Image Optimization Tool{colorama.Style.RESET_ALL}")
     print(f"{colorama.Fore.CYAN} - Multi-Core Turbo Speed Version{colorama.Style.RESET_ALL}")
-    print(f"{colorama.Fore.CYAN}{'='*100}{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.CYAN}{'=' * term_width}{colorama.Style.RESET_ALL}")
 
     overall_start_time = time.time()
 
@@ -470,7 +460,7 @@ def main():
 
     total_elapsed = time.time() - overall_start_time
 
-    print(f"\n{colorama.Fore.CYAN}{'='*100}{colorama.Style.RESET_ALL}")
+    print(f"\n{colorama.Fore.CYAN}{'=' * term_width}{colorama.Style.RESET_ALL}")
     print(f"{colorama.Fore.GREEN}All tasks completed in {total_elapsed:.2f}s.{colorama.Style.RESET_ALL}")
 
     if total_bytes_orig > 0:
@@ -478,7 +468,7 @@ def main():
         reduction_percentage = (total_saved / total_bytes_orig) * 100
         print(f"{colorama.Fore.GREEN}Total size optimized: {format_size(total_bytes_orig)} -> {format_size(total_bytes_new)} (-{reduction_percentage:.2f}%, saved {format_size(total_saved)}){colorama.Style.RESET_ALL}")
 
-    print(f"{colorama.Fore.CYAN}{'='*100}{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.CYAN}{'=' * term_width}{colorama.Style.RESET_ALL}")
 
 
 if __name__ == "__main__":
