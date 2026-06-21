@@ -383,26 +383,50 @@ def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=Fals
             return 0, 0
 
 
+def _show_config(items):
+    term_width = shutil.get_terminal_size().columns
+    width = min(term_width, 68)
+
+    source_colors = {
+        'CLI': colorama.Fore.GREEN,
+        'env': colorama.Fore.YELLOW,
+        'default': colorama.Fore.LIGHTBLACK_EX,
+    }
+
+    print(f"\n{colorama.Fore.CYAN}{'=' * width}{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.CYAN}{'TinyImage Configuration':^{width}}{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.CYAN}{'=' * width}{colorama.Style.RESET_ALL}")
+
+    for label, value, source in items:
+        sc = source_colors.get(source, colorama.Fore.LIGHTBLACK_EX)
+        print(f"  {colorama.Fore.CYAN}{label:<25}{colorama.Style.RESET_ALL} {str(value):>15}   {sc}({source}){colorama.Style.RESET_ALL}")
+
+    print(f"{colorama.Fore.CYAN}{'=' * width}{colorama.Style.RESET_ALL}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="TinyImage - Image Optimization Tool")
+
+    del_group = parser.add_mutually_exclusive_group()
+    del_group.add_argument('--delete-original', action='store_true', default=False, help="Permanently delete original files after compression")
+    del_group.add_argument('--soft-delete-original', action='store_true', default=False, help="Move original files to trash instead of permanent delete")
+
     parser.add_argument('--dir', help="Set both input and output directory (cannot be used with --input or --output)")
     parser.add_argument('--input', default=INPUT_DEFAULT, help=f"Input directory (default: {INPUT_DEFAULT}, env: TINYIMAGE_INPUT)")
-    parser.add_argument('--output', default=OUTPUT_DEFAULT, help=f"Output directory (default: {OUTPUT_DEFAULT}, env: TINYIMAGE_OUTPUT)")
-    parser.add_argument('--png-to-webp', action='store_true', default=False, help="Convert PNG images to WebP format")
-    parser.add_argument('--jpg-to-webp', action='store_true', default=False, help="Convert JPEG images to WebP format")
-    parser.add_argument('--override', action='store_true', default=False, help="Override [minify] check and force re-compression")
-    parser.add_argument('--quality', type=int, default=None, help="JPEG/WebP compression quality (default: 80, env: TINYIMAGE_QUALITY)")
-    parser.add_argument('--png-level', type=int, default=None, help="PNG compress level 0-9 (default: 9, env: TINYIMAGE_PNG_LEVEL)")
-    parser.add_argument('--webp-method', type=int, default=None, help="WebP compression method 0-6 (default: 6, env: TINYIMAGE_WEBP_METHOD)")
     parser.add_argument('--jpeg-progressive', action='store_true', default=None, help="Enable JPEG progressive encoding (env: TINYIMAGE_JPEG_PROGRESSIVE)")
+    parser.add_argument('--jpg-to-webp', action='store_true', default=False, help="Convert JPEG images to WebP format")
+    parser.add_argument('--output', default=OUTPUT_DEFAULT, help=f"Output directory (default: {OUTPUT_DEFAULT}, env: TINYIMAGE_OUTPUT)")
+    parser.add_argument('--override', action='store_true', default=False, help="Override [minify] check and force re-compression")
+    parser.add_argument('--png-level', type=int, default=None, help="PNG compress level 0-9 (default: 9, env: TINYIMAGE_PNG_LEVEL)")
+    parser.add_argument('--png-to-webp', action='store_true', default=False, help="Convert PNG images to WebP format")
+    parser.add_argument('--quality', type=int, default=None, help="JPEG/WebP compression quality (default: 80, env: TINYIMAGE_QUALITY)")
 
     exec_group = parser.add_mutually_exclusive_group()
     exec_group.add_argument('--sequential', action='store_true', default=False, help="Disable multiprocessing, process images sequentially")
     exec_group.add_argument('--workers', type=int, default=None, help="Maximum number of parallel workers (default: CPU core count)")
 
-    del_group = parser.add_mutually_exclusive_group()
-    del_group.add_argument('--delete-original', action='store_true', default=False, help="Permanently delete original files after compression")
-    del_group.add_argument('--soft-delete-original', action='store_true', default=False, help="Move original files to trash instead of permanent delete")
+    parser.add_argument('--show-config', action='store_true', default=False, help="Display current configuration and exit")
+    parser.add_argument('--webp-method', type=int, default=None, help="WebP compression method 0-6 (default: 6, env: TINYIMAGE_WEBP_METHOD)")
 
     args = parser.parse_args()
 
@@ -437,6 +461,61 @@ def main():
     else:
         input_dir = args.input
         output_dir = args.output
+
+    if args.show_config:
+        def _source(label, value, cli_test=None, env_key=None):
+            if cli_test and cli_test():
+                return (label, value, 'CLI')
+            if env_key and env_key in os.environ:
+                return (label, value, 'env')
+            return (label, value, 'default')
+
+        items = [
+            _source("Input dir", input_dir,
+                    cli_test=lambda: '--dir' in sys.argv or '--input' in sys.argv,
+                    env_key='TINYIMAGE_INPUT'),
+            _source("Output dir", output_dir,
+                    cli_test=lambda: '--dir' in sys.argv or '--output' in sys.argv,
+                    env_key='TINYIMAGE_OUTPUT'),
+            _source("Quality", quality,
+                    cli_test=lambda: args.quality is not None,
+                    env_key='TINYIMAGE_QUALITY'),
+            _source("PNG level", png_level,
+                    cli_test=lambda: args.png_level is not None,
+                    env_key='TINYIMAGE_PNG_LEVEL'),
+            _source("WebP method", webp_method,
+                    cli_test=lambda: args.webp_method is not None,
+                    env_key='TINYIMAGE_WEBP_METHOD'),
+            _source("JPEG progressive", jpeg_progressive,
+                    cli_test=lambda: args.jpeg_progressive is not None,
+                    env_key='TINYIMAGE_JPEG_PROGRESSIVE'),
+            _source("Suffix", SUFFIX,
+                    env_key='TINYIMAGE_SUFFIX'),
+            _source("Image extensions", ', '.join(IMG_EXTENSIONS),
+                    env_key='TINYIMAGE_IMG_EXTS'),
+            _source("Archive extensions", ', '.join(ARC_EXTENSIONS),
+                    env_key='TINYIMAGE_ARC_EXTS'),
+            _source("PNG level (stream)", PNG_LEVEL_STREAM,
+                    env_key='TINYIMAGE_PNG_LEVEL_STREAM'),
+            _source("WebP method (stream)", WEBP_METHOD_STREAM,
+                    env_key='TINYIMAGE_WEBP_METHOD_STREAM'),
+            _source("PNG -> WebP", png_to_webp,
+                    cli_test=lambda: '--png-to-webp' in sys.argv),
+            _source("JPEG -> WebP", jpg_to_webp,
+                    cli_test=lambda: '--jpg-to-webp' in sys.argv),
+            _source("Override", override,
+                    cli_test=lambda: '--override' in sys.argv),
+            _source("Sequential", sequential,
+                    cli_test=lambda: '--sequential' in sys.argv),
+            _source("Workers", workers,
+                    cli_test=lambda: args.workers is not None),
+            _source("Delete original", delete_original,
+                    cli_test=lambda: '--delete-original' in sys.argv),
+            _source("Soft delete original", soft_delete,
+                    cli_test=lambda: '--soft-delete-original' in sys.argv),
+        ]
+        _show_config(items)
+        return
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)

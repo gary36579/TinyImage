@@ -36,21 +36,22 @@ python main.py --quality 85 --png-level 7
 ### Options
 
 | Argument | Default | Description |
-|---|---|---|
-| `--input DIR` | `input` | Input directory (env: `TINYIMAGE_INPUT`) |
-| `--output DIR` | `output` | Output directory (env: `TINYIMAGE_OUTPUT`) |
-| `--dir DIR` | — | Set both input and output to the same directory (cannot be used with `--input` or `--output`) |
-| `--png-to-webp` | `false` | Convert PNG images to WebP |
-| `--jpg-to-webp` | `false` | Convert JPEG images to WebP |
-| `--override` | `false` | Override `[minify]` check and force re-compression |
-| `--quality N` | `80` | JPEG/WebP compression quality (env: `TINYIMAGE_QUALITY`) |
-| `--png-level N` | `9` | PNG compress level 0-9 (env: `TINYIMAGE_PNG_LEVEL`) |
-| `--webp-method N` | `6` | WebP compression method 0-6 (env: `TINYIMAGE_WEBP_METHOD`) |
-| `--jpeg-progressive` | `true` | Enable JPEG progressive encoding (env: `TINYIMAGE_JPEG_PROGRESSIVE`) |
-| `--sequential` | `false` | Disable multiprocessing, process images one by one |
-| `--workers N` | CPU count | Maximum parallel workers (mutually exclusive with `--sequential`) |
+|---|---|---|---|
 | `--delete-original` | `false` | Permanently delete original files after compression |
+| `--dir DIR` | — | Set both input and output to the same directory (cannot be used with `--input` or `--output`) |
+| `--input DIR` | `input` | Input directory (env: `TINYIMAGE_INPUT`) |
+| `--jpeg-progressive` | `true` | Enable JPEG progressive encoding (env: `TINYIMAGE_JPEG_PROGRESSIVE`) |
+| `--jpg-to-webp` | `false` | Convert JPEG images to WebP |
+| `--output DIR` | `output` | Output directory (env: `TINYIMAGE_OUTPUT`) |
+| `--override` | `false` | Override `[minify]` check and force re-compression |
+| `--png-level N` | `9` | PNG compress level 0-9 (env: `TINYIMAGE_PNG_LEVEL`) |
+| `--png-to-webp` | `false` | Convert PNG images to WebP |
+| `--quality N` | `80` | JPEG/WebP compression quality (env: `TINYIMAGE_QUALITY`) |
+| `--sequential` | `false` | Disable multiprocessing, process images one by one |
+| `--show-config` | `false` | Display current configuration and exit |
 | `--soft-delete-original` | `false` | Move original files to trash (requires `send2trash`, mutually exclusive with `--delete-original`) |
+| `--webp-method N` | `6` | WebP compression method 0-6 (env: `TINYIMAGE_WEBP_METHOD`) |
+| `--workers N` | CPU count | Maximum parallel workers (mutually exclusive with `--sequential`) |
 
 ### .env 配置
 
@@ -92,16 +93,16 @@ Numbers above are defaults; all are overridable via `--quality` / `--png-level` 
 
 | Variable | Default | Description |
 |---|---|---|
-| `TINYIMAGE_INPUT` | `input` | Default for `--input` |
-| `TINYIMAGE_OUTPUT` | `output` | Default for `--output` |
-| `TINYIMAGE_QUALITY` | `80` | Default for `--quality` |
-| `TINYIMAGE_PNG_LEVEL` | `9` | Default for `--png-level` |
-| `TINYIMAGE_WEBP_METHOD` | `6` | Default for `--webp-method` |
-| `TINYIMAGE_JPEG_PROGRESSIVE` | `True` | Default for `--jpeg-progressive` |
-| `TINYIMAGE_SUFFIX` | `[minify]` | Output filename marker |
-| `TINYIMAGE_IMG_EXTS` | `.jpg,.jpeg,.png,.webp` | Processed image extensions (comma-separated) |
 | `TINYIMAGE_ARC_EXTS` | `.zip,.7z` | Processed archive extensions (comma-separated) |
+| `TINYIMAGE_IMG_EXTS` | `.jpg,.jpeg,.png,.webp` | Processed image extensions (comma-separated) |
+| `TINYIMAGE_INPUT` | `input` | Default for `--input` |
+| `TINYIMAGE_JPEG_PROGRESSIVE` | `True` | Default for `--jpeg-progressive` |
+| `TINYIMAGE_OUTPUT` | `output` | Default for `--output` |
+| `TINYIMAGE_PNG_LEVEL` | `9` | Default for `--png-level` |
 | `TINYIMAGE_PNG_LEVEL_STREAM` | `3` | ZIP in-memory PNG compression level |
+| `TINYIMAGE_QUALITY` | `80` | Default for `--quality` |
+| `TINYIMAGE_SUFFIX` | `[minify]` | Output filename marker |
+| `TINYIMAGE_WEBP_METHOD` | `6` | Default for `--webp-method` |
 | `TINYIMAGE_WEBP_METHOD_STREAM` | `4` | ZIP in-memory WebP compression method |
 
 ## Testing
