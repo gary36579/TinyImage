@@ -11,8 +11,20 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 import colorama
 import io
+import ctypes
 
 colorama.init()
+
+FILE_ATTRIBUTE_HIDDEN = 0x2
+
+
+def is_hidden(path):
+    try:
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+        return attrs != -1 and bool(attrs & FILE_ATTRIBUTE_HIDDEN)
+    except Exception:
+        return False
+
 
 try:
     import send2trash
@@ -407,7 +419,10 @@ def main():
     found_any = False
 
     for root, dirs, files in os.walk(input_dir):
+        dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
         for filename in sorted(files):
+            if is_hidden(os.path.join(root, filename)):
+                continue
             if not override and SUFFIX in filename:
                 rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
                 print(f"{colorama.Fore.LIGHTBLACK_EX}[Skipped] {rel_path} (already processed){colorama.Style.RESET_ALL}")
