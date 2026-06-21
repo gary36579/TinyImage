@@ -11,6 +11,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 import colorama
 import io
+
 colorama.init()
 
 try:
@@ -146,7 +147,7 @@ def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=
             return False, 0, 0, 0, output_path
 
 
-def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False):
+def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False, override=False):
     """全記憶體優化版：針對 ZIP 進行流式壓縮，不釋放至硬碟"""
     filename = os.path.basename(input_path)
     start_time = time.time()
@@ -172,7 +173,7 @@ def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=Fa
 
                     orig_data = z_in.read(item.filename)
 
-                    if SUFFIX in item.filename:
+                    if not override and SUFFIX in item.filename:
                         z_out.writestr(item.filename, orig_data)
                         continue
 
@@ -244,7 +245,7 @@ def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=Fa
         return 0, 0
 
 
-def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False):
+def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False, override=False):
     """7z 格式保持暫存區，但內部檔案複製改用效率優化"""
     filename = os.path.basename(input_path)
     start_time = time.time()
@@ -268,7 +269,7 @@ def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=Fals
                     src_f = os.path.join(root, f)
                     rel_path = os.path.relpath(src_f, tmp_in)
 
-                    if SUFFIX in f:
+                    if not override and SUFFIX in f:
                         dst_f = os.path.join(tmp_out, rel_path)
                         os.makedirs(os.path.dirname(dst_f), exist_ok=True)
                         shutil.copy2(src_f, dst_f)
@@ -350,6 +351,7 @@ def main():
     parser.add_argument('--output', default='output', help="Output directory (default: output)")
     parser.add_argument('--png-to-webp', action='store_true', default=False, help="Convert PNG images to WebP format")
     parser.add_argument('--jpg-to-webp', action='store_true', default=False, help="Convert JPEG images to WebP format")
+    parser.add_argument('--override', action='store_true', default=False, help="Override [minify] check and force re-compression")
 
     exec_group = parser.add_mutually_exclusive_group()
     exec_group.add_argument('--sequential', action='store_true', default=False, help="Disable multiprocessing, process images sequentially")
@@ -363,6 +365,7 @@ def main():
 
     png_to_webp = args.png_to_webp
     jpg_to_webp = args.jpg_to_webp
+    override = args.override
     delete_original = args.delete_original
     soft_delete = args.soft_delete_original
     sequential = args.sequential
@@ -405,7 +408,7 @@ def main():
 
     for root, dirs, files in os.walk(input_dir):
         for filename in sorted(files):
-            if SUFFIX in filename:
+            if not override and SUFFIX in filename:
                 rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
                 print(f"{colorama.Fore.LIGHTBLACK_EX}[Skipped] {rel_path} (already processed){colorama.Style.RESET_ALL}")
                 continue
@@ -470,11 +473,11 @@ def main():
                     output_path = os.path.join(out_rel_dir, out_filename)
 
                     if ext == '.zip':
-                        o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp)
+                        o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp, override)
                         total_bytes_orig += o
                         total_bytes_new += n
                     elif ext == '.7z':
-                        o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp)
+                        o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp, override)
                         total_bytes_orig += o
                         total_bytes_new += n
 
@@ -531,11 +534,11 @@ def main():
                         output_path = os.path.join(out_rel_dir, out_filename)
 
                         if ext == '.zip':
-                            o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp)
+                            o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp, override)
                             total_bytes_orig += o
                             total_bytes_new += n
                         elif ext == '.7z':
-                            o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp)
+                            o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp, override)
                             total_bytes_orig += o
                             total_bytes_new += n
 
