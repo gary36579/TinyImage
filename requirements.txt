@@ -2,5 +2,6 @@ Pillow>=12.2.0
 py7zr>=1.1.0
 send2trash>=2.1.0
 tqdm>=4.66.0
+python-dotenv>=1.1.0
 pytest>=9.1.0
 pytest-xdist>=3.8.0

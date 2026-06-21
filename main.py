@@ -12,8 +12,32 @@ from tqdm import tqdm
 import colorama
 import io
 import ctypes
+from dotenv import load_dotenv
 
+load_dotenv()
 colorama.init()
+
+
+def _env_int(key, default):
+    try:
+        return int(os.environ[key])
+    except (KeyError, ValueError, TypeError):
+        return default
+
+
+def _env_str(key, default):
+    return os.environ.get(key, default)
+
+
+def _env_bool(key, default):
+    v = os.environ.get(key)
+    return default if v is None else v.lower() in ('1', 'true', 'yes')
+
+
+def _env_list(key, default):
+    raw = os.environ.get(key)
+    return tuple(x.strip() for x in raw.split(',')) if raw else default
+
 
 FILE_ATTRIBUTE_HIDDEN = 0x2
 
@@ -32,9 +56,13 @@ try:
 except ImportError:
     HAS_SEND2TRASH = False
 
-IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
-ARC_EXTENSIONS = ('.zip', '.7z')
-SUFFIX = "[minify]"
+IMG_EXTENSIONS = _env_list('TINYIMAGE_IMG_EXTS', ('.jpg', '.jpeg', '.png', '.webp'))
+ARC_EXTENSIONS = _env_list('TINYIMAGE_ARC_EXTS', ('.zip', '.7z'))
+SUFFIX = _env_str('TINYIMAGE_SUFFIX', '[minify]')
+PNG_LEVEL_STREAM = _env_int('TINYIMAGE_PNG_LEVEL_STREAM', 3)
+WEBP_METHOD_STREAM = _env_int('TINYIMAGE_WEBP_METHOD_STREAM', 4)
+INPUT_DEFAULT = _env_str('TINYIMAGE_INPUT', 'input')
+OUTPUT_DEFAULT = _env_str('TINYIMAGE_OUTPUT', 'output')
 
 
 def remove_file(path, soft):
@@ -76,8 +104,7 @@ def get_output_name(filename, png_to_webp=False, jpg_to_webp=False):
     return f"{name} {SUFFIX}{ext}"
 
 
-def compress_image_stream(img_bytes, fmt, exif=None, icc_profile=None, png_to_webp=False, jpg_to_webp=False):
-    """在記憶體中直接壓縮圖片，不產生實體檔案，用於縮短 Zip 處理時間"""
+def compress_image_stream(img_bytes, fmt, exif=None, icc_profile=None, png_to_webp=False, jpg_to_webp=False, quality=80, png_level=9, webp_method=6, jpeg_progressive=True):
     try:
         if fmt == 'PNG' and png_to_webp:
             fmt = 'WEBP'
@@ -94,11 +121,11 @@ def compress_image_stream(img_bytes, fmt, exif=None, icc_profile=None, png_to_we
                 save_kwargs['icc_profile'] = icc_profile
 
             if fmt == 'JPEG':
-                save_kwargs.update({'quality': 80, 'progressive': True})
+                save_kwargs.update({'quality': quality, 'progressive': jpeg_progressive})
             elif fmt == 'WEBP':
-                save_kwargs.update({'quality': 80, 'method': 6})
+                save_kwargs.update({'quality': quality, 'method': webp_method})
             elif fmt == 'PNG':
-                save_kwargs['compress_level'] = 9
+                save_kwargs['compress_level'] = png_level
 
             out_io = io.BytesIO()
             img.save(out_io, format=fmt, **save_kwargs)
@@ -112,8 +139,7 @@ def compress_image_stream(img_bytes, fmt, exif=None, icc_profile=None, png_to_we
         return img_bytes, True
 
 
-def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=False):
-    """壓縮單一圖片檔案（供多進程呼叫）"""
+def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=False, quality=80, png_level=9, webp_method=6, jpeg_progressive=True):
     try:
         orig_size = os.path.getsize(input_path)
 
@@ -135,11 +161,11 @@ def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=
                 save_kwargs['icc_profile'] = icc_profile
 
             if fmt == 'JPEG':
-                save_kwargs.update({'quality': 80, 'progressive': True})
+                save_kwargs.update({'quality': quality, 'progressive': jpeg_progressive})
             elif fmt == 'WEBP':
-                save_kwargs.update({'quality': 80, 'method': 6})
+                save_kwargs.update({'quality': quality, 'method': webp_method})
             elif fmt == 'PNG':
-                save_kwargs['compress_level'] = 9
+                save_kwargs['compress_level'] = png_level
 
             img.save(output_path, format=fmt, **save_kwargs)
 
@@ -159,8 +185,7 @@ def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=
             return False, 0, 0, 0, output_path
 
 
-def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False, override=False):
-    """全記憶體優化版：針對 ZIP 進行流式壓縮，不釋放至硬碟"""
+def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False, override=False, quality=80, png_level=9, webp_method=6, jpeg_progressive=True, png_level_stream=3, webp_method_stream=4):
     filename = os.path.basename(input_path)
     start_time = time.time()
 
@@ -199,7 +224,8 @@ def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=Fa
                                 icc_profile = img.info.get('icc_profile')
 
                             if executor:
-                                future = executor.submit(compress_image_stream, orig_data, fmt, exif, icc_profile, png_to_webp, jpg_to_webp)
+                                future = executor.submit(compress_image_stream, orig_data, fmt, exif, icc_profile, png_to_webp,
+                                                         jpg_to_webp, quality, png_level_stream, webp_method_stream, jpeg_progressive)
                                 futures[future] = (item.filename, out_rel_path, len(orig_data), orig_data)
                             else:
                                 pending.append((item.filename, out_rel_path, orig_data, fmt, exif, icc_profile))
@@ -229,7 +255,8 @@ def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=Fa
                     for orig_filename, out_rel_path, orig_data, fmt, exif, icc_profile in pending:
                         orig_size = len(orig_data)
                         try:
-                            new_data, is_reverted = compress_image_stream(orig_data, fmt, exif, icc_profile, png_to_webp, jpg_to_webp)
+                            new_data, is_reverted = compress_image_stream(orig_data, fmt, exif, icc_profile, png_to_webp, jpg_to_webp,
+                                                                          quality, png_level_stream, webp_method_stream, jpeg_progressive)
                             new_size = len(new_data)
                             final_out_path = get_output_name(orig_filename, png_to_webp=False, jpg_to_webp=False) if is_reverted else out_rel_path
                             z_out.writestr(final_out_path, new_data)
@@ -257,8 +284,7 @@ def process_zip_in_memory(input_path, output_path, executor=None, png_to_webp=Fa
         return 0, 0
 
 
-def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False, override=False):
-    """7z 格式保持暫存區，但內部檔案複製改用效率優化"""
+def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=False, jpg_to_webp=False, override=False, quality=80, png_level=9, webp_method=6, jpeg_progressive=True):
     filename = os.path.basename(input_path)
     start_time = time.time()
 
@@ -299,7 +325,8 @@ def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=Fals
 
             if image_tasks:
                 if executor:
-                    futures = {executor.submit(compress_image_file, src, dst, png_to_webp, jpg_to_webp): (src, dst) for src, dst in image_tasks}
+                    futures = {executor.submit(compress_image_file, src, dst, png_to_webp, jpg_to_webp, quality, png_level,
+                                               webp_method, jpeg_progressive): (src, dst) for src, dst in image_tasks}
                     for future in as_completed(futures):
                         success, o, n, r, final_path = future.result()
                         if success:
@@ -319,7 +346,7 @@ def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=Fals
                             shutil.copy2(src, real_dst)
                 else:
                     for src, dst in image_tasks:
-                        success, o, n, r, final_path = compress_image_file(src, dst, png_to_webp, jpg_to_webp)
+                        success, o, n, r, final_path = compress_image_file(src, dst, png_to_webp, jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
                         if success:
                             total_orig += o
                             total_new += n
@@ -359,11 +386,15 @@ def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=Fals
 def main():
     parser = argparse.ArgumentParser(description="TinyImage - Image Optimization Tool")
     parser.add_argument('--dir', help="Set both input and output directory (cannot be used with --input or --output)")
-    parser.add_argument('--input', default='input', help="Input directory (default: input)")
-    parser.add_argument('--output', default='output', help="Output directory (default: output)")
+    parser.add_argument('--input', default=INPUT_DEFAULT, help=f"Input directory (default: {INPUT_DEFAULT}, env: TINYIMAGE_INPUT)")
+    parser.add_argument('--output', default=OUTPUT_DEFAULT, help=f"Output directory (default: {OUTPUT_DEFAULT}, env: TINYIMAGE_OUTPUT)")
     parser.add_argument('--png-to-webp', action='store_true', default=False, help="Convert PNG images to WebP format")
     parser.add_argument('--jpg-to-webp', action='store_true', default=False, help="Convert JPEG images to WebP format")
     parser.add_argument('--override', action='store_true', default=False, help="Override [minify] check and force re-compression")
+    parser.add_argument('--quality', type=int, default=None, help="JPEG/WebP compression quality (default: 80, env: TINYIMAGE_QUALITY)")
+    parser.add_argument('--png-level', type=int, default=None, help="PNG compress level 0-9 (default: 9, env: TINYIMAGE_PNG_LEVEL)")
+    parser.add_argument('--webp-method', type=int, default=None, help="WebP compression method 0-6 (default: 6, env: TINYIMAGE_WEBP_METHOD)")
+    parser.add_argument('--jpeg-progressive', action='store_true', default=None, help="Enable JPEG progressive encoding (env: TINYIMAGE_JPEG_PROGRESSIVE)")
 
     exec_group = parser.add_mutually_exclusive_group()
     exec_group.add_argument('--sequential', action='store_true', default=False, help="Disable multiprocessing, process images sequentially")
@@ -382,6 +413,11 @@ def main():
     soft_delete = args.soft_delete_original
     sequential = args.sequential
     workers = args.workers
+
+    quality = args.quality if args.quality is not None else _env_int('TINYIMAGE_QUALITY', 80)
+    png_level = args.png_level if args.png_level is not None else _env_int('TINYIMAGE_PNG_LEVEL', 9)
+    webp_method = args.webp_method if args.webp_method is not None else _env_int('TINYIMAGE_WEBP_METHOD', 6)
+    jpeg_progressive = args.jpeg_progressive if args.jpeg_progressive is not None else _env_bool('TINYIMAGE_JPEG_PROGRESSIVE', True)
 
     if soft_delete and not HAS_SEND2TRASH:
         parser.error("--soft-delete-original requires send2trash. Install with: pip install send2trash")
@@ -461,7 +497,8 @@ def main():
                     status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
 
                     try:
-                        success, o, n, r, final_output_path = compress_image_file(input_path, output_path, png_to_webp, jpg_to_webp)
+                        success, o, n, r, final_output_path = compress_image_file(input_path, output_path, png_to_webp,
+                                                                                  jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
                         if success:
                             final_filename = os.path.basename(final_output_path)
                             tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
@@ -488,11 +525,12 @@ def main():
                     output_path = os.path.join(out_rel_dir, out_filename)
 
                     if ext == '.zip':
-                        o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp, override)
+                        o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality,
+                                                     png_level, webp_method, jpeg_progressive, PNG_LEVEL_STREAM, WEBP_METHOD_STREAM)
                         total_bytes_orig += o
                         total_bytes_new += n
                     elif ext == '.7z':
-                        o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp, override)
+                        o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
                         total_bytes_orig += o
                         total_bytes_new += n
 
@@ -511,7 +549,7 @@ def main():
                 out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
                 os.makedirs(out_rel_dir, exist_ok=True)
                 output_path = os.path.join(out_rel_dir, out_filename)
-                future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp)
+                future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
                 future_to_file[future] = (rel_path, out_filename, input_path)
 
             with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
@@ -549,11 +587,12 @@ def main():
                         output_path = os.path.join(out_rel_dir, out_filename)
 
                         if ext == '.zip':
-                            o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp, override)
+                            o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality,
+                                                         png_level, webp_method, jpeg_progressive, PNG_LEVEL_STREAM, WEBP_METHOD_STREAM)
                             total_bytes_orig += o
                             total_bytes_new += n
                         elif ext == '.7z':
-                            o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp, override)
+                            o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
                             total_bytes_orig += o
                             total_bytes_new += n
 
