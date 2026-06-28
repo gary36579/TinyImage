@@ -56,13 +56,11 @@ try:
 except ImportError:
     HAS_SEND2TRASH = False
 
-IMG_EXTENSIONS = _env_list('TINYIMAGE_IMG_EXTS', ('.jpg', '.jpeg', '.png', '.webp'))
-ARC_EXTENSIONS = _env_list('TINYIMAGE_ARC_EXTS', ('.zip', '.7z'))
-SUFFIX = _env_str('TINYIMAGE_SUFFIX', '[minify]')
-PNG_LEVEL_STREAM = _env_int('TINYIMAGE_PNG_LEVEL_STREAM', 3)
-WEBP_METHOD_STREAM = _env_int('TINYIMAGE_WEBP_METHOD_STREAM', 4)
-INPUT_DEFAULT = _env_str('TINYIMAGE_INPUT', 'input')
-OUTPUT_DEFAULT = _env_str('TINYIMAGE_OUTPUT', 'output')
+IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
+ARC_EXTENSIONS = ('.zip', '.7z')
+SUFFIX = '[minify]'
+PNG_LEVEL_STREAM = 3
+WEBP_METHOD_STREAM = 4
 
 
 def remove_file(path, soft):
@@ -104,28 +102,35 @@ def get_output_name(filename, png_to_webp=False, jpg_to_webp=False):
     return f"{name} {SUFFIX}{ext}"
 
 
+def _convert_format(fmt, png_to_webp, jpg_to_webp):
+    if fmt == 'PNG' and png_to_webp:
+        return 'WEBP'
+    if fmt == 'JPEG' and jpg_to_webp:
+        return 'WEBP'
+    return fmt
+
+
+def _build_save_kwargs(fmt, exif, icc_profile, quality, png_level, webp_method, jpeg_progressive):
+    save_kwargs = {'optimize': True}
+    if exif:
+        save_kwargs['exif'] = exif
+    if icc_profile:
+        save_kwargs['icc_profile'] = icc_profile
+    if fmt == 'JPEG':
+        save_kwargs.update({'quality': quality, 'progressive': jpeg_progressive})
+    elif fmt == 'WEBP':
+        save_kwargs.update({'quality': quality, 'method': webp_method})
+    elif fmt == 'PNG':
+        save_kwargs['compress_level'] = png_level
+    return save_kwargs
+
+
 def compress_image_stream(img_bytes, fmt, exif=None, icc_profile=None, png_to_webp=False, jpg_to_webp=False, quality=80, png_level=9, webp_method=6, jpeg_progressive=True):
     try:
-        if fmt == 'PNG' and png_to_webp:
-            fmt = 'WEBP'
-        elif fmt == 'JPEG' and jpg_to_webp:
-            fmt = 'WEBP'
+        fmt = _convert_format(fmt, png_to_webp, jpg_to_webp)
 
         with Image.open(io.BytesIO(img_bytes)) as img:
-            save_kwargs = {'optimize': True}
-
-            if exif:
-                save_kwargs['exif'] = exif
-
-            if icc_profile:
-                save_kwargs['icc_profile'] = icc_profile
-
-            if fmt == 'JPEG':
-                save_kwargs.update({'quality': quality, 'progressive': jpeg_progressive})
-            elif fmt == 'WEBP':
-                save_kwargs.update({'quality': quality, 'method': webp_method})
-            elif fmt == 'PNG':
-                save_kwargs['compress_level'] = png_level
+            save_kwargs = _build_save_kwargs(fmt, exif, icc_profile, quality, png_level, webp_method, jpeg_progressive)
 
             out_io = io.BytesIO()
             img.save(out_io, format=fmt, **save_kwargs)
@@ -144,28 +149,10 @@ def compress_image_file(input_path, output_path, png_to_webp=False, jpg_to_webp=
         orig_size = os.path.getsize(input_path)
 
         with Image.open(input_path) as img:
-            fmt = img.format
-            if fmt == 'PNG' and png_to_webp:
-                fmt = 'WEBP'
-            elif fmt == 'JPEG' and jpg_to_webp:
-                fmt = 'WEBP'
-
+            fmt = _convert_format(img.format, png_to_webp, jpg_to_webp)
             exif = img.info.get('exif')
             icc_profile = img.info.get('icc_profile')
-            save_kwargs = {'optimize': True}
-
-            if exif:
-                save_kwargs['exif'] = exif
-
-            if icc_profile:
-                save_kwargs['icc_profile'] = icc_profile
-
-            if fmt == 'JPEG':
-                save_kwargs.update({'quality': quality, 'progressive': jpeg_progressive})
-            elif fmt == 'WEBP':
-                save_kwargs.update({'quality': quality, 'method': webp_method})
-            elif fmt == 'PNG':
-                save_kwargs['compress_level'] = png_level
+            save_kwargs = _build_save_kwargs(fmt, exif, icc_profile, quality, png_level, webp_method, jpeg_progressive)
 
             img.save(output_path, format=fmt, **save_kwargs)
 
@@ -335,15 +322,7 @@ def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=Fals
                             img_count += 1
                         else:
                             src, dst = futures[future]
-                            orig_ext = os.path.splitext(src)[1]
-                            dst_name, dst_ext = os.path.splitext(dst)
-                            real_dst = dst_name + orig_ext
-                            if os.path.exists(dst) and dst != real_dst:
-                                try:
-                                    os.remove(dst)
-                                except Exception:
-                                    pass
-                            shutil.copy2(src, real_dst)
+                            fallback_copy(src, dst)
                 else:
                     for src, dst in image_tasks:
                         success, o, n, r, final_path = compress_image_file(src, dst, png_to_webp, jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
@@ -352,15 +331,7 @@ def process_7z_with_tmp(input_path, output_path, executor=None, png_to_webp=Fals
                             total_new += n
                             img_count += 1
                         else:
-                            orig_ext = os.path.splitext(src)[1]
-                            dst_name, dst_ext = os.path.splitext(dst)
-                            real_dst = dst_name + orig_ext
-                            if os.path.exists(dst) and dst != real_dst:
-                                try:
-                                    os.remove(dst)
-                                except Exception:
-                                    pass
-                            shutil.copy2(src, real_dst)
+                            fallback_copy(src, dst)
 
             with py7zr.SevenZipFile(output_path, 'w') as s:
                 for root, dirs, files in os.walk(tmp_out):
@@ -404,6 +375,15 @@ def _show_config(items):
     print(f"{colorama.Fore.CYAN}{'=' * width}{colorama.Style.RESET_ALL}\n")
 
 
+def _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp):
+    input_path = os.path.join(root, filename)
+    out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
+    out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
+    os.makedirs(out_rel_dir, exist_ok=True)
+    output_path = os.path.join(out_rel_dir, out_filename)
+    return input_path, output_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="TinyImage - Image Optimization Tool")
 
@@ -411,56 +391,75 @@ def main():
     del_group.add_argument('--delete-original', action='store_true', default=False, help="Permanently delete original files after compression")
     del_group.add_argument('--soft-delete-original', action='store_true', default=False, help="Move original files to trash instead of permanent delete")
 
+    parser.add_argument('--arc-exts', help="Comma-separated archive extensions (env: TINYIMAGE_ARC_EXTS, default: .zip,.7z)")
     parser.add_argument('--dir', help="Set both input and output directory (cannot be used with --input or --output)")
-    parser.add_argument('--input', default=INPUT_DEFAULT, help=f"Input directory (default: {INPUT_DEFAULT}, env: TINYIMAGE_INPUT)")
+    parser.add_argument('--img-exts', help="Comma-separated image extensions (env: TINYIMAGE_IMG_EXTS, default: .jpg,.jpeg,.png,.webp)")
+    parser.add_argument('--input', default=None, help="Input directory (env: TINYIMAGE_INPUT, default: 'input')")
     parser.add_argument('--jpeg-progressive', action='store_true', default=None, help="Enable JPEG progressive encoding (env: TINYIMAGE_JPEG_PROGRESSIVE)")
-    parser.add_argument('--jpg-to-webp', action='store_true', default=False, help="Convert JPEG images to WebP format")
-    parser.add_argument('--output', default=OUTPUT_DEFAULT, help=f"Output directory (default: {OUTPUT_DEFAULT}, env: TINYIMAGE_OUTPUT)")
-    parser.add_argument('--override', action='store_true', default=False, help="Override [minify] check and force re-compression")
-    parser.add_argument('--png-level', type=int, default=None, help="PNG compress level 0-9 (default: 9, env: TINYIMAGE_PNG_LEVEL)")
-    parser.add_argument('--png-to-webp', action='store_true', default=False, help="Convert PNG images to WebP format")
-    parser.add_argument('--quality', type=int, default=None, help="JPEG/WebP compression quality (default: 80, env: TINYIMAGE_QUALITY)")
+    parser.add_argument('--jpg-to-webp', action='store_true', default=None, help="Convert JPEG images to WebP format (env: TINYIMAGE_JPG_TO_WEBP)")
+    parser.add_argument('--output', default=None, help="Output directory (env: TINYIMAGE_OUTPUT, default: 'output')")
+    parser.add_argument('--override', action='store_true', default=None, help="Override [minify] check and force re-compression (env: TINYIMAGE_OVERRIDE)")
+    parser.add_argument('--png-level', type=int, default=None, help="PNG compress level 0-9 (env: TINYIMAGE_PNG_LEVEL, default: 9)")
+    parser.add_argument('--png-level-stream', type=int, default=None, help="ZIP in-memory PNG compress level 0-9 (env: TINYIMAGE_PNG_LEVEL_STREAM, default: 3)")
+    parser.add_argument('--png-to-webp', action='store_true', default=None, help="Convert PNG images to WebP format (env: TINYIMAGE_PNG_TO_WEBP)")
+    parser.add_argument('--quality', type=int, default=None, help="JPEG/WebP compression quality (env: TINYIMAGE_QUALITY, default: 80)")
 
     exec_group = parser.add_mutually_exclusive_group()
     exec_group.add_argument('--sequential', action='store_true', default=False, help="Disable multiprocessing, process images sequentially")
-    exec_group.add_argument('--workers', type=int, default=None, help="Maximum number of parallel workers (default: CPU core count)")
+    exec_group.add_argument('--workers', type=int, default=None, help="Maximum number of parallel workers (env: TINYIMAGE_WORKERS, default: CPU core count)")
 
     parser.add_argument('--show-config', action='store_true', default=False, help="Display current configuration and exit")
-    parser.add_argument('--webp-method', type=int, default=None, help="WebP compression method 0-6 (default: 6, env: TINYIMAGE_WEBP_METHOD)")
+    parser.add_argument('--suffix', default=None, help="Output filename suffix marker (env: TINYIMAGE_SUFFIX, default: '[minify]')")
+    parser.add_argument('--webp-method', type=int, default=None, help="WebP compression method 0-6 (env: TINYIMAGE_WEBP_METHOD, default: 6)")
+    parser.add_argument('--webp-method-stream', type=int, default=None, help="ZIP in-memory WebP method 0-6 (env: TINYIMAGE_WEBP_METHOD_STREAM, default: 4)")
 
     args = parser.parse_args()
 
-    png_to_webp = args.png_to_webp
-    jpg_to_webp = args.jpg_to_webp
-    override = args.override
     delete_original = args.delete_original
     soft_delete = args.soft_delete_original
     sequential = args.sequential
-    workers = args.workers
 
+    # Three-tier priority: CLI > env > default
     quality = args.quality if args.quality is not None else _env_int('TINYIMAGE_QUALITY', 80)
     png_level = args.png_level if args.png_level is not None else _env_int('TINYIMAGE_PNG_LEVEL', 9)
     webp_method = args.webp_method if args.webp_method is not None else _env_int('TINYIMAGE_WEBP_METHOD', 6)
     jpeg_progressive = args.jpeg_progressive if args.jpeg_progressive is not None else _env_bool('TINYIMAGE_JPEG_PROGRESSIVE', True)
+    png_to_webp = args.png_to_webp if args.png_to_webp is not None else _env_bool('TINYIMAGE_PNG_TO_WEBP', False)
+    jpg_to_webp = args.jpg_to_webp if args.jpg_to_webp is not None else _env_bool('TINYIMAGE_JPG_TO_WEBP', False)
+    override = args.override if args.override is not None else _env_bool('TINYIMAGE_OVERRIDE', False)
+
+    global SUFFIX, PNG_LEVEL_STREAM, WEBP_METHOD_STREAM, IMG_EXTENSIONS, ARC_EXTENSIONS
+    SUFFIX = args.suffix if args.suffix is not None else _env_str('TINYIMAGE_SUFFIX', '[minify]')
+    PNG_LEVEL_STREAM = args.png_level_stream if args.png_level_stream is not None else _env_int('TINYIMAGE_PNG_LEVEL_STREAM', 3)
+    WEBP_METHOD_STREAM = args.webp_method_stream if args.webp_method_stream is not None else _env_int('TINYIMAGE_WEBP_METHOD_STREAM', 4)
+
+    if args.img_exts is not None:
+        IMG_EXTENSIONS = tuple(x.strip() for x in args.img_exts.split(','))
+    else:
+        IMG_EXTENSIONS = _env_list('TINYIMAGE_IMG_EXTS', ('.jpg', '.jpeg', '.png', '.webp'))
+
+    if args.arc_exts is not None:
+        ARC_EXTENSIONS = tuple(x.strip() for x in args.arc_exts.split(','))
+    else:
+        ARC_EXTENSIONS = _env_list('TINYIMAGE_ARC_EXTS', ('.zip', '.7z'))
+
+    # Input/output with three-tier, then --dir override
+    input_dir = args.input if args.input else _env_str('TINYIMAGE_INPUT', 'input')
+    output_dir = args.output if args.output else _env_str('TINYIMAGE_OUTPUT', 'output')
 
     if soft_delete and not HAS_SEND2TRASH:
         parser.error("--soft-delete-original requires send2trash. Install with: pip install send2trash")
 
-    if workers is not None:
-        if workers < 1:
-            parser.error("--workers must be at least 1")
-        workers = min(workers, os.cpu_count())
-    else:
-        workers = os.cpu_count()
+    workers_val = args.workers if args.workers is not None else _env_int('TINYIMAGE_WORKERS', os.cpu_count())
+    if workers_val < 1:
+        parser.error("--workers must be at least 1")
+    workers = min(workers_val, os.cpu_count())
 
     if args.dir:
         if '--input' in sys.argv or '--output' in sys.argv:
             parser.error("--dir cannot be used with --input or --output")
         input_dir = args.dir
         output_dir = args.dir
-    else:
-        input_dir = args.input
-        output_dir = args.output
 
     if args.show_config:
         def _source(label, value, cli_test=None, env_key=None):
@@ -490,25 +489,34 @@ def main():
                     cli_test=lambda: args.jpeg_progressive is not None,
                     env_key='TINYIMAGE_JPEG_PROGRESSIVE'),
             _source("Suffix", SUFFIX,
+                    cli_test=lambda: '--suffix' in sys.argv,
                     env_key='TINYIMAGE_SUFFIX'),
             _source("Image extensions", ', '.join(IMG_EXTENSIONS),
+                    cli_test=lambda: '--img-exts' in sys.argv,
                     env_key='TINYIMAGE_IMG_EXTS'),
             _source("Archive extensions", ', '.join(ARC_EXTENSIONS),
+                    cli_test=lambda: '--arc-exts' in sys.argv,
                     env_key='TINYIMAGE_ARC_EXTS'),
             _source("PNG level (stream)", PNG_LEVEL_STREAM,
+                    cli_test=lambda: '--png-level-stream' in sys.argv,
                     env_key='TINYIMAGE_PNG_LEVEL_STREAM'),
             _source("WebP method (stream)", WEBP_METHOD_STREAM,
+                    cli_test=lambda: '--webp-method-stream' in sys.argv,
                     env_key='TINYIMAGE_WEBP_METHOD_STREAM'),
             _source("PNG -> WebP", png_to_webp,
-                    cli_test=lambda: '--png-to-webp' in sys.argv),
+                    cli_test=lambda: '--png-to-webp' in sys.argv,
+                    env_key='TINYIMAGE_PNG_TO_WEBP'),
             _source("JPEG -> WebP", jpg_to_webp,
-                    cli_test=lambda: '--jpg-to-webp' in sys.argv),
+                    cli_test=lambda: '--jpg-to-webp' in sys.argv,
+                    env_key='TINYIMAGE_JPG_TO_WEBP'),
             _source("Override", override,
-                    cli_test=lambda: '--override' in sys.argv),
+                    cli_test=lambda: '--override' in sys.argv,
+                    env_key='TINYIMAGE_OVERRIDE'),
             _source("Sequential", sequential,
                     cli_test=lambda: '--sequential' in sys.argv),
             _source("Workers", workers,
-                    cli_test=lambda: args.workers is not None),
+                    cli_test=lambda: args.workers is not None,
+                    env_key='TINYIMAGE_WORKERS'),
             _source("Delete original", delete_original,
                     cli_test=lambda: '--delete-original' in sys.argv),
             _source("Soft delete original", soft_delete,
@@ -567,11 +575,7 @@ def main():
         with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
             with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
                 for root, filename, rel_path in image_tasks:
-                    input_path = os.path.join(root, filename)
-                    out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
-                    out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
-                    os.makedirs(out_rel_dir, exist_ok=True)
-                    output_path = os.path.join(out_rel_dir, out_filename)
+                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
 
                     status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
 
@@ -596,12 +600,8 @@ def main():
 
                 for root, filename, rel_path in archive_tasks:
                     status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-                    input_path = os.path.join(root, filename)
                     ext = os.path.splitext(filename)[1].lower()
-                    out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
-                    out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
-                    os.makedirs(out_rel_dir, exist_ok=True)
-                    output_path = os.path.join(out_rel_dir, out_filename)
+                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
 
                     if ext == '.zip':
                         o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality,
@@ -623,18 +623,14 @@ def main():
         with ProcessPoolExecutor(max_workers=workers) as executor:
             future_to_file = {}
             for root, filename, rel_path in image_tasks:
-                input_path = os.path.join(root, filename)
-                out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
-                out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
-                os.makedirs(out_rel_dir, exist_ok=True)
-                output_path = os.path.join(out_rel_dir, out_filename)
+                input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
                 future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
-                future_to_file[future] = (rel_path, out_filename, input_path)
+                future_to_file[future] = (rel_path, input_path)
 
             with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
                 with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
                     for future in as_completed(future_to_file):
-                        rel_path, out_filename, input_path = future_to_file[future]
+                        rel_path, input_path = future_to_file[future]
                         status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
 
                         try:
@@ -658,12 +654,8 @@ def main():
 
                     for root, filename, rel_path in archive_tasks:
                         status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-                        input_path = os.path.join(root, filename)
                         ext = os.path.splitext(filename)[1].lower()
-                        out_filename = get_output_name(filename, png_to_webp, jpg_to_webp)
-                        out_rel_dir = os.path.join(output_dir, os.path.dirname(rel_path))
-                        os.makedirs(out_rel_dir, exist_ok=True)
-                        output_path = os.path.join(out_rel_dir, out_filename)
+                        input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
 
                         if ext == '.zip':
                             o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality,

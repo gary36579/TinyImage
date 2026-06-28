@@ -63,3 +63,14 @@ def webp_file(rgba_image, tmp_output_dir):
     path = os.path.join(tmp_output_dir, 'test.webp')
     rgba_image.save(path, format='WebP', quality=95)
     return path
+
+
+@pytest.fixture
+def saved_globals():
+    import main
+    keys = ('SUFFIX', 'PNG_LEVEL_STREAM', 'WEBP_METHOD_STREAM',
+            'IMG_EXTENSIONS', 'ARC_EXTENSIONS')
+    saved = {k: getattr(main, k) for k in keys}
+    yield
+    for k, v in saved.items():
+        setattr(main, k, v)
