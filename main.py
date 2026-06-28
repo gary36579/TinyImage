@@ -393,6 +393,7 @@ def main():
 
     parser.add_argument('--arc-exts', help="Comma-separated archive extensions (env: TINYIMAGE_ARC_EXTS, default: .zip,.7z)")
     parser.add_argument('--dir', help="Set both input and output directory (cannot be used with --input or --output)")
+    parser.add_argument('--file', '--files', nargs='+', dest='files', default=None, help="One or more specific files to process (cannot be used with --dir or --input)")
     parser.add_argument('--img-exts', help="Comma-separated image extensions (env: TINYIMAGE_IMG_EXTS, default: .jpg,.jpeg,.png,.webp)")
     parser.add_argument('--input', default=None, help="Input directory (env: TINYIMAGE_INPUT, default: 'input')")
     parser.add_argument('--jpeg-progressive', action='store_true', default=None, help="Enable JPEG progressive encoding (env: TINYIMAGE_JPEG_PROGRESSIVE)")
@@ -460,6 +461,12 @@ def main():
             parser.error("--dir cannot be used with --input or --output")
         input_dir = args.dir
         output_dir = args.dir
+
+    if args.files:
+        if args.dir or '--input' in sys.argv:
+            parser.error("--file/--files cannot be used with --dir or --input")
+        if not args.output and '--output' not in sys.argv:
+            output_dir = '.'
 
     if args.show_config:
         def _source(label, value, cli_test=None, env_key=None):
@@ -536,33 +543,51 @@ def main():
 
     overall_start_time = time.time()
 
-    # 使用 os.walk 遞迴掃描所有子資料夾
     image_tasks = []
     archive_tasks = []
     found_any = False
 
-    for root, dirs, files in os.walk(input_dir):
-        dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
-        for filename in sorted(files):
-            if is_hidden(os.path.join(root, filename)):
+    if args.files:
+        for filepath in args.files:
+            if not os.path.exists(filepath):
+                print(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} File not found: {filepath}")
                 continue
+            filename = os.path.basename(filepath)
             if not override and SUFFIX in filename:
-                rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
-                print(f"{colorama.Fore.LIGHTBLACK_EX}[Skipped] {rel_path} (already processed){colorama.Style.RESET_ALL}")
+                print(f"{colorama.Fore.LIGHTBLACK_EX}[Skipped] {filepath} (already processed){colorama.Style.RESET_ALL}")
                 continue
-
             ext = os.path.splitext(filename)[1].lower()
-            rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
-
+            root = os.path.dirname(filepath) or '.'
             if ext in IMG_EXTENSIONS:
-                image_tasks.append((root, filename, rel_path))
+                image_tasks.append((root, filename, filename))
                 found_any = True
             elif ext in ARC_EXTENSIONS:
-                archive_tasks.append((root, filename, rel_path))
+                archive_tasks.append((root, filename, filename))
+                found_any = True
+    else:
+        for root, dirs, files in os.walk(input_dir):
+            dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+            for filename in sorted(files):
+                if is_hidden(os.path.join(root, filename)):
+                    continue
+                if not override and SUFFIX in filename:
+                    rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
+                    print(f"{colorama.Fore.LIGHTBLACK_EX}[Skipped] {rel_path} (already processed){colorama.Style.RESET_ALL}")
+                    continue
+
+                ext = os.path.splitext(filename)[1].lower()
+                rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
+
+                if ext in IMG_EXTENSIONS:
+                    image_tasks.append((root, filename, rel_path))
+                    found_any = True
+                elif ext in ARC_EXTENSIONS:
+                    archive_tasks.append((root, filename, rel_path))
                 found_any = True
 
     if not found_any:
-        print(f"{colorama.Fore.YELLOW}Input folder is empty.{colorama.Style.RESET_ALL}")
+        msg = "No files found." if args.files else "Input folder is empty."
+        print(f"{colorama.Fore.YELLOW}{msg}{colorama.Style.RESET_ALL}")
 
         return
 

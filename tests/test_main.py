@@ -587,3 +587,89 @@ class TestEdgeCases:
         assert success
         assert orig == new
         assert os.path.exists(final_path)
+
+
+class TestFileMode:
+    @pytest.mark.usefixtures('saved_globals')
+    def test_file_single_image(self, capsys, monkeypatch, tmp_output_dir):
+        monkeypatch.chdir(tmp_output_dir)
+        img_path = 'photo.jpg'
+        Image.new('RGB', (10, 10)).save(img_path, format='JPEG', quality=95)
+        monkeypatch.setattr(sys, 'argv', ['main.py', '--file', img_path, '--output', tmp_output_dir, '--sequential'])
+        import main
+        main.main()
+        clean = _clean_ansi(capsys.readouterr().out)
+        assert 'OK' in clean
+
+    @pytest.mark.usefixtures('saved_globals')
+    def test_file_not_found(self, capsys, monkeypatch, tmp_output_dir):
+        monkeypatch.chdir(tmp_output_dir)
+        monkeypatch.setattr(sys, 'argv', ['main.py', '--file', 'nonexistent.jpg', '--output', tmp_output_dir, '--sequential'])
+        import main
+        main.main()
+        clean = _clean_ansi(capsys.readouterr().out)
+        assert 'File not found' in clean
+
+    @pytest.mark.usefixtures('saved_globals')
+    def test_file_skips_already_processed(self, capsys, monkeypatch, tmp_output_dir):
+        monkeypatch.chdir(tmp_output_dir)
+        filename = f'photo {SUFFIX}.jpg'
+        Image.new('RGB', (10, 10)).save(filename, format='JPEG', quality=95)
+        monkeypatch.setattr(sys, 'argv', ['main.py', '--file', filename, '--output', tmp_output_dir, '--sequential'])
+        import main
+        main.main()
+        clean = _clean_ansi(capsys.readouterr().out)
+        assert 'Skipped' in clean
+
+    @pytest.mark.usefixtures('saved_globals')
+    def test_file_dir_conflict(self, monkeypatch, tmp_output_dir):
+        monkeypatch.chdir(tmp_output_dir)
+        monkeypatch.setattr(sys, 'argv', ['main.py', '--file', 'a.jpg', '--dir', 'some_dir'])
+        import main
+        with pytest.raises(SystemExit):
+            main.main()
+
+    @pytest.mark.usefixtures('saved_globals')
+    def test_file_input_conflict(self, monkeypatch, tmp_output_dir):
+        monkeypatch.chdir(tmp_output_dir)
+        monkeypatch.setattr(sys, 'argv', ['main.py', '--file', 'a.jpg', '--input', 'some_dir'])
+        import main
+        with pytest.raises(SystemExit):
+            main.main()
+
+    @pytest.mark.usefixtures('saved_globals')
+    def test_file_multiple_images(self, capsys, monkeypatch, tmp_output_dir):
+        monkeypatch.chdir(tmp_output_dir)
+        Image.new('RGB', (10, 10)).save('a.jpg', format='JPEG', quality=95)
+        Image.new('RGB', (10, 10)).save('b.png', format='PNG')
+        monkeypatch.setattr(sys, 'argv', ['main.py', '--file', 'a.jpg', 'b.png', '--output', tmp_output_dir, '--sequential'])
+        import main
+        main.main()
+        clean = _clean_ansi(capsys.readouterr().out)
+        assert clean.count('OK') == 2
+
+    @pytest.mark.usefixtures('saved_globals')
+    def test_file_unsupported_extension(self, capsys, monkeypatch, tmp_output_dir):
+        monkeypatch.chdir(tmp_output_dir)
+        with open('readme.txt', 'w') as f:
+            f.write('text')
+        monkeypatch.setattr(sys, 'argv', ['main.py', '--file', 'readme.txt', '--output', tmp_output_dir, '--sequential'])
+        import main
+        main.main()
+        clean = _clean_ansi(capsys.readouterr().out)
+        assert 'No files found' in clean
+
+    @pytest.mark.usefixtures('saved_globals')
+    def test_file_with_output_dir(self, capsys, monkeypatch, tmp_output_dir):
+        monkeypatch.chdir(tmp_output_dir)
+        img_path = 'photo.jpg'
+        Image.new('RGB', (10, 10)).save(img_path, format='JPEG', quality=95)
+        out_dir = os.path.join(tmp_output_dir, 'out')
+        os.makedirs(out_dir)
+        monkeypatch.setattr(sys, 'argv', ['main.py', '--file', img_path, '--output', out_dir, '--sequential'])
+        import main
+        main.main()
+        captured = capsys.readouterr()
+        assert 'OK' in _clean_ansi(captured.out)
+        out_files = os.listdir(out_dir)
+        assert any(SUFFIX in f for f in out_files)

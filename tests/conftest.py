@@ -7,7 +7,7 @@ from PIL import Image
 
 @pytest.fixture
 def tmp_output_dir():
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         yield tmpdir
 
 
