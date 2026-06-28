@@ -13,6 +13,8 @@ Batch image compression tool with parallel processing, archive support, and form
 - **Recursive directory scanning** — processes images in nested subdirectories, mirroring structure in output
 - **Single / multiple file mode** — process individual files via `--file` / `--files` without scanning directories
 - **Dry-run safety** — never modifies originals unless `--delete-original` or `--soft-delete-original` is explicitly set
+- **Watch mode** — polls input directory for changes and processes files automatically via `--watch`
+- **.env configuration** — three-tier priority: CLI > `.env` > defaults
 
 ## Installation
 
@@ -35,6 +37,8 @@ python main.py --quality 85 --png-level 7
 python main.py --workers 4
 python main.py --file photo.jpg
 python main.py --files a.jpg b.png
+python main.py --watch
+python main.py --watch --watch-interval 5
 ```
 
 ### Options
@@ -58,6 +62,8 @@ python main.py --files a.jpg b.png
 | `--sequential` | `false` | Disable multiprocessing, process images one by one |
 | `--show-config` | `false` | Display current configuration and exit |
 | `--soft-delete-original` | `false` | Move original files to trash (requires `send2trash`, mutually exclusive with `--delete-original`) |
+| `--watch` | `false` | Enable watch mode — monitor directory for changes and process automatically |
+| `--watch-interval N` | `3` | Watch mode polling interval in seconds (env: `TINYIMAGE_WATCH_INTERVAL`) |
 | `--suffix` | `[minify]` | Output filename suffix marker (env: `TINYIMAGE_SUFFIX`) |
 | `--webp-method N` | `6` | WebP compression method 0-6 (env: `TINYIMAGE_WEBP_METHOD`) |
 | `--webp-method-stream N` | `4` | ZIP in-memory WebP method 0-6 (env: `TINYIMAGE_WEBP_METHOD_STREAM`) |
@@ -117,6 +123,7 @@ Numbers above are defaults; all are overridable via `--quality` / `--png-level` 
 | `TINYIMAGE_SUFFIX` | `[minify]` | Output filename marker |
 | `TINYIMAGE_WEBP_METHOD` | `6` | Default for `--webp-method` |
 | `TINYIMAGE_WEBP_METHOD_STREAM` | `4` | ZIP in-memory WebP compression method |
+| `TINYIMAGE_WATCH_INTERVAL` | `3` | Default for `--watch-interval` |
 | `TINYIMAGE_WORKERS` | CPU count | Default for `--workers` |
 
 ## Testing

@@ -6,6 +6,7 @@ import py7zr
 import shutil
 import tempfile
 import time
+import signal
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
@@ -384,6 +385,238 @@ def _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
     return input_path, output_path
 
 
+def _scan_directory(input_dir, img_exts, arc_exts, override, suffix):
+    image_tasks = []
+    archive_tasks = []
+    found_any = False
+    for root, dirs, files in os.walk(input_dir):
+        dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+        for filename in sorted(files):
+            if is_hidden(os.path.join(root, filename)):
+                continue
+            if not override and suffix in filename:
+                rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
+                print(f"{colorama.Fore.LIGHTBLACK_EX}[Skipped] {rel_path} (already processed){colorama.Style.RESET_ALL}")
+                continue
+            ext = os.path.splitext(filename)[1].lower()
+            rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
+            if ext in img_exts:
+                image_tasks.append((root, filename, rel_path))
+                found_any = True
+            elif ext in arc_exts:
+                archive_tasks.append((root, filename, rel_path))
+                found_any = True
+    return image_tasks, archive_tasks, found_any
+
+
+def _run_tasks(image_tasks, archive_tasks, output_dir, sequential, workers,
+               png_to_webp, jpg_to_webp, quality, png_level, webp_method,
+               jpeg_progressive, override, delete_original, soft_delete,
+               png_level_stream, webp_method_stream):
+    total_bytes_orig = 0
+    total_bytes_new = 0
+    total_items = len(image_tasks) + len(archive_tasks)
+
+    if sequential:
+        with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
+            with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
+                for root, filename, rel_path in image_tasks:
+                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
+
+                    status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+
+                    try:
+                        success, o, n, r, final_output_path = compress_image_file(input_path, output_path, png_to_webp,
+                                                                                  jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
+                        if success:
+                            final_filename = os.path.basename(final_output_path)
+                            tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
+                            total_bytes_orig += o
+                            total_bytes_new += n
+                            if delete_original or soft_delete:
+                                remove_file(input_path, soft_delete)
+                                label = "Moved to trash" if soft_delete else "Deleted"
+                                tqdm.write(f"{colorama.Fore.RED}       [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+                        else:
+                            tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}")
+                    except Exception as exc:
+                        tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}: {exc}")
+
+                    pbar.update(1)
+
+                for root, filename, rel_path in archive_tasks:
+                    status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+                    ext = os.path.splitext(filename)[1].lower()
+                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
+
+                    if ext == '.zip':
+                        o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality,
+                                                     png_level, webp_method, jpeg_progressive, png_level_stream, webp_method_stream)
+                        total_bytes_orig += o
+                        total_bytes_new += n
+                    elif ext == '.7z':
+                        o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
+                        total_bytes_orig += o
+                        total_bytes_new += n
+
+                    if delete_original or soft_delete:
+                        remove_file(input_path, soft_delete)
+                        label = "Moved to trash" if soft_delete else "Deleted"
+                        tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+
+                    pbar.update(1)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_to_file = {}
+            for root, filename, rel_path in image_tasks:
+                input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
+                future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
+                future_to_file[future] = (rel_path, input_path)
+
+            with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
+                with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
+                    for future in as_completed(future_to_file):
+                        rel_path, input_path = future_to_file[future]
+                        status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+
+                        try:
+                            success, o, n, r, final_output_path = future.result()
+
+                            if success:
+                                final_filename = os.path.basename(final_output_path)
+                                tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
+                                total_bytes_orig += o
+                                total_bytes_new += n
+                                if delete_original or soft_delete:
+                                    remove_file(input_path, soft_delete)
+                                    label = "Moved to trash" if soft_delete else "Deleted"
+                                    tqdm.write(f"{colorama.Fore.RED}       [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+                            else:
+                                tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}")
+                        except Exception as exc:
+                            tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}: {exc}")
+
+                        pbar.update(1)
+
+                    for root, filename, rel_path in archive_tasks:
+                        status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+                        ext = os.path.splitext(filename)[1].lower()
+                        input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
+
+                        if ext == '.zip':
+                            o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality,
+                                                         png_level, webp_method, jpeg_progressive, png_level_stream, webp_method_stream)
+                            total_bytes_orig += o
+                            total_bytes_new += n
+                        elif ext == '.7z':
+                            o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
+                            total_bytes_orig += o
+                            total_bytes_new += n
+
+                        if delete_original or soft_delete:
+                            remove_file(input_path, soft_delete)
+                            label = "Moved to trash" if soft_delete else "Deleted"
+                            tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+
+                        pbar.update(1)
+
+    return total_bytes_orig, total_bytes_new
+
+
+def _watch_loop(input_dir, output_dir, interval,
+                sequential, workers,
+                png_to_webp, jpg_to_webp, quality, png_level, webp_method,
+                jpeg_progressive, override, delete_original, soft_delete,
+                png_level_stream, webp_method_stream):
+    print(f"\n{colorama.Fore.CYAN}Watch mode enabled. Monitoring '{input_dir}' every {interval}s...{colorama.Style.RESET_ALL}")
+    print(f"{colorama.Fore.LIGHTBLACK_EX}Press Ctrl+C to stop.{colorama.Style.RESET_ALL}")
+
+    stop_requested = False
+
+    def _sigint_handler(sig, frame):
+        nonlocal stop_requested
+        if not stop_requested:
+            stop_requested = True
+            tqdm.write(f"\n{colorama.Fore.YELLOW}Shutdown requested, finishing current batch...{colorama.Style.RESET_ALL}")
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    image_tasks, archive_tasks, found = _scan_directory(input_dir, IMG_EXTENSIONS, ARC_EXTENSIONS, override, SUFFIX)
+    if image_tasks or archive_tasks:
+        _run_tasks(image_tasks, archive_tasks, output_dir, sequential, workers,
+                   png_to_webp, jpg_to_webp, quality, png_level, webp_method,
+                   jpeg_progressive, override, delete_original, soft_delete,
+                   png_level_stream, webp_method_stream)
+
+    tracked = {}
+    for root, dirs, files in os.walk(input_dir):
+        dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            if is_hidden(fpath):
+                continue
+            try:
+                tracked[fpath] = os.path.getmtime(fpath)
+            except OSError:
+                pass
+
+    _busy = False
+
+    while not stop_requested:
+        time.sleep(interval)
+
+        if stop_requested or _busy:
+            continue
+
+        _busy = True
+        try:
+            current = {}
+            for root, dirs, files in os.walk(input_dir):
+                dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    if is_hidden(fpath):
+                        continue
+                    try:
+                        current[fpath] = os.path.getmtime(fpath)
+                    except OSError:
+                        pass
+
+            delta_images = []
+            delta_archives = []
+
+            for fpath, mtime in current.items():
+                if fpath not in tracked or mtime != tracked[fpath]:
+                    filename = os.path.basename(fpath)
+                    if not override and SUFFIX in filename:
+                        continue
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext not in IMG_EXTENSIONS and ext not in ARC_EXTENSIONS:
+                        continue
+                    rel_path = os.path.relpath(fpath, input_dir)
+                    root = os.path.dirname(fpath)
+                    if ext in IMG_EXTENSIONS:
+                        delta_images.append((root, filename, rel_path))
+                    else:
+                        delta_archives.append((root, filename, rel_path))
+
+            for fpath in list(tracked):
+                if fpath not in current:
+                    del tracked[fpath]
+
+            if delta_images or delta_archives:
+                _run_tasks(delta_images, delta_archives, output_dir, sequential, workers,
+                           png_to_webp, jpg_to_webp, quality, png_level, webp_method,
+                           jpeg_progressive, override, delete_original, soft_delete,
+                           png_level_stream, webp_method_stream)
+
+            tracked = current
+        finally:
+            _busy = False
+
+    print(f"{colorama.Fore.GREEN}Watch mode stopped.{colorama.Style.RESET_ALL}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="TinyImage - Image Optimization Tool")
 
@@ -413,6 +646,8 @@ def main():
     parser.add_argument('--suffix', default=None, help="Output filename suffix marker (env: TINYIMAGE_SUFFIX, default: '[minify]')")
     parser.add_argument('--webp-method', type=int, default=None, help="WebP compression method 0-6 (env: TINYIMAGE_WEBP_METHOD, default: 6)")
     parser.add_argument('--webp-method-stream', type=int, default=None, help="ZIP in-memory WebP method 0-6 (env: TINYIMAGE_WEBP_METHOD_STREAM, default: 4)")
+    parser.add_argument('--watch', action='store_true', default=False, help="Enable watch mode - monitor directory for changes and process automatically")
+    parser.add_argument('--watch-interval', type=int, default=None, help="Watch mode polling interval in seconds (env: TINYIMAGE_WATCH_INTERVAL, default: 3)")
 
     args = parser.parse_args()
 
@@ -467,6 +702,8 @@ def main():
             parser.error("--file/--files cannot be used with --dir or --input")
         if not args.output and '--output' not in sys.argv:
             output_dir = '.'
+
+    watch_interval = args.watch_interval if args.watch_interval is not None else _env_int('TINYIMAGE_WATCH_INTERVAL', 3)
 
     if args.show_config:
         def _source(label, value, cli_test=None, env_key=None):
@@ -528,8 +765,27 @@ def main():
                     cli_test=lambda: '--delete-original' in sys.argv),
             _source("Soft delete original", soft_delete,
                     cli_test=lambda: '--soft-delete-original' in sys.argv),
+            _source("Watch mode", args.watch or 'off',
+                    cli_test=lambda: '--watch' in sys.argv),
+            _source("Watch interval (s)", watch_interval,
+                    cli_test=lambda: '--watch-interval' in sys.argv,
+                    env_key='TINYIMAGE_WATCH_INTERVAL'),
         ]
         _show_config(items)
+        return
+
+    if args.watch:
+        if args.files:
+            parser.error("--watch cannot be used with --file/--files")
+        if watch_interval < 1:
+            parser.error("--watch-interval must be at least 1")
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        _watch_loop(input_dir, output_dir, watch_interval,
+                    sequential, workers,
+                    png_to_webp, jpg_to_webp, quality, png_level, webp_method,
+                    jpeg_progressive, override, delete_original, soft_delete,
+                    PNG_LEVEL_STREAM, WEBP_METHOD_STREAM)
         return
 
     if not os.path.exists(output_dir):
@@ -565,25 +821,7 @@ def main():
                 archive_tasks.append((root, filename, filename))
                 found_any = True
     else:
-        for root, dirs, files in os.walk(input_dir):
-            dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
-            for filename in sorted(files):
-                if is_hidden(os.path.join(root, filename)):
-                    continue
-                if not override and SUFFIX in filename:
-                    rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
-                    print(f"{colorama.Fore.LIGHTBLACK_EX}[Skipped] {rel_path} (already processed){colorama.Style.RESET_ALL}")
-                    continue
-
-                ext = os.path.splitext(filename)[1].lower()
-                rel_path = os.path.relpath(os.path.join(root, filename), input_dir)
-
-                if ext in IMG_EXTENSIONS:
-                    image_tasks.append((root, filename, rel_path))
-                    found_any = True
-                elif ext in ARC_EXTENSIONS:
-                    archive_tasks.append((root, filename, rel_path))
-                found_any = True
+        image_tasks, archive_tasks, found_any = _scan_directory(input_dir, IMG_EXTENSIONS, ARC_EXTENSIONS, override, SUFFIX)
 
     if not found_any:
         msg = "No files found." if args.files else "Input folder is empty."
@@ -591,113 +829,12 @@ def main():
 
         return
 
-    total_bytes_orig = 0
-    total_bytes_new = 0
-
-    total_items = len(image_tasks) + len(archive_tasks)
-
-    if sequential:
-        with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
-            with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
-                for root, filename, rel_path in image_tasks:
-                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
-
-                    status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-
-                    try:
-                        success, o, n, r, final_output_path = compress_image_file(input_path, output_path, png_to_webp,
-                                                                                  jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
-                        if success:
-                            final_filename = os.path.basename(final_output_path)
-                            tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
-                            total_bytes_orig += o
-                            total_bytes_new += n
-                            if delete_original or soft_delete:
-                                remove_file(input_path, soft_delete)
-                                label = "Moved to trash" if soft_delete else "Deleted"
-                                tqdm.write(f"{colorama.Fore.RED}       [{label}] {rel_path}{colorama.Style.RESET_ALL}")
-                        else:
-                            tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}")
-                    except Exception as exc:
-                        tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}: {exc}")
-
-                    pbar.update(1)
-
-                for root, filename, rel_path in archive_tasks:
-                    status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-                    ext = os.path.splitext(filename)[1].lower()
-                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
-
-                    if ext == '.zip':
-                        o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality,
-                                                     png_level, webp_method, jpeg_progressive, PNG_LEVEL_STREAM, WEBP_METHOD_STREAM)
-                        total_bytes_orig += o
-                        total_bytes_new += n
-                    elif ext == '.7z':
-                        o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
-                        total_bytes_orig += o
-                        total_bytes_new += n
-
-                    if delete_original or soft_delete:
-                        remove_file(input_path, soft_delete)
-                        label = "Moved to trash" if soft_delete else "Deleted"
-                        tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
-
-                    pbar.update(1)
-    else:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            future_to_file = {}
-            for root, filename, rel_path in image_tasks:
-                input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
-                future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
-                future_to_file[future] = (rel_path, input_path)
-
-            with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
-                with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
-                    for future in as_completed(future_to_file):
-                        rel_path, input_path = future_to_file[future]
-                        status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-
-                        try:
-                            success, o, n, r, final_output_path = future.result()
-
-                            if success:
-                                final_filename = os.path.basename(final_output_path)
-                                tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
-                                total_bytes_orig += o
-                                total_bytes_new += n
-                                if delete_original or soft_delete:
-                                    remove_file(input_path, soft_delete)
-                                    label = "Moved to trash" if soft_delete else "Deleted"
-                                    tqdm.write(f"{colorama.Fore.RED}       [{label}] {rel_path}{colorama.Style.RESET_ALL}")
-                            else:
-                                tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}")
-                        except Exception as exc:
-                            tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}: {exc}")
-
-                        pbar.update(1)
-
-                    for root, filename, rel_path in archive_tasks:
-                        status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-                        ext = os.path.splitext(filename)[1].lower()
-                        input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
-
-                        if ext == '.zip':
-                            o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality,
-                                                         png_level, webp_method, jpeg_progressive, PNG_LEVEL_STREAM, WEBP_METHOD_STREAM)
-                            total_bytes_orig += o
-                            total_bytes_new += n
-                        elif ext == '.7z':
-                            o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
-                            total_bytes_orig += o
-                            total_bytes_new += n
-
-                        if delete_original or soft_delete:
-                            remove_file(input_path, soft_delete)
-                            label = "Moved to trash" if soft_delete else "Deleted"
-                            tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
-
-                        pbar.update(1)
+    total_bytes_orig, total_bytes_new = _run_tasks(
+        image_tasks, archive_tasks, output_dir, sequential, workers,
+        png_to_webp, jpg_to_webp, quality, png_level, webp_method,
+        jpeg_progressive, override, delete_original, soft_delete,
+        PNG_LEVEL_STREAM, WEBP_METHOD_STREAM
+    )
 
     total_elapsed = time.time() - overall_start_time
 
