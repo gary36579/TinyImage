@@ -14,6 +14,7 @@ Batch image compression tool with parallel processing, archive support, and form
 - **Single / multiple file mode** — process individual files via `--file` / `--files` without scanning directories
 - **Dry-run safety** — never modifies originals unless `--delete-original` or `--soft-delete-original` is explicitly set
 - **Watch mode** — polls input directory for changes and processes files automatically via `--watch`
+- **Graphical user interface** — launched via `--gui` or `python -m gui.gui` with all compression controls
 - **.env configuration** — three-tier priority: CLI > `.env` > defaults
 
 ## Installation
@@ -39,6 +40,7 @@ python main.py --file photo.jpg
 python main.py --files a.jpg b.png
 python main.py --watch
 python main.py --watch --watch-interval 5
+python main.py --gui
 ```
 
 ### Options
@@ -46,28 +48,29 @@ python main.py --watch --watch-interval 5
 | Argument | Default | Description |
 |---|---|---|---|---|
 | `--arc-exts` | `.zip,.7z` | Comma-separated archive extensions (env: `TINYIMAGE_ARC_EXTS`) |
-| `--delete-original` | `false` | Permanently delete original files after compression |
+| `--delete-original` | `False` | Permanently delete original files after compression |
 | `--dir DIR` | — | Set both input and output to the same directory (cannot be used with `--input` or `--output`) |
 | `--file FILES [FILES ...]` / `--files` | — | One or more specific files to process (cannot be used with `--dir` or `--input`) |
+| `--gui` | `False` | Launch graphical user interface |
 | `--img-exts` | `.jpg,.jpeg,.png,.webp` | Comma-separated image extensions (env: `TINYIMAGE_IMG_EXTS`) |
 | `--input DIR` | `input` | Input directory (env: `TINYIMAGE_INPUT`) |
-| `--jpeg-progressive` | `true` | Enable JPEG progressive encoding (env: `TINYIMAGE_JPEG_PROGRESSIVE`) |
-| `--jpg-to-webp` | `false` | Convert JPEG images to WebP (env: `TINYIMAGE_JPG_TO_WEBP`) |
+| `--jpeg-progressive` | `True` | Enable JPEG progressive encoding (env: `TINYIMAGE_JPEG_PROGRESSIVE`) |
+| `--jpg-to-webp` | `False` | Convert JPEG images to WebP (env: `TINYIMAGE_JPG_TO_WEBP`) |
 | `--output DIR` | `output` | Output directory (env: `TINYIMAGE_OUTPUT`) |
-| `--override` | `false` | Override `[minify]` check and force re-compression (env: `TINYIMAGE_OVERRIDE`) |
+| `--override` | `False` | Override `[minify]` check and force re-compression (env: `TINYIMAGE_OVERRIDE`) |
 | `--png-level N` | `9` | PNG compress level 0-9 (env: `TINYIMAGE_PNG_LEVEL`) |
 | `--png-level-stream N` | `3` | ZIP in-memory PNG compress level 0-9 (env: `TINYIMAGE_PNG_LEVEL_STREAM`) |
-| `--png-to-webp` | `false` | Convert PNG images to WebP (env: `TINYIMAGE_PNG_TO_WEBP`) |
+| `--png-to-webp` | `False` | Convert PNG images to WebP (env: `TINYIMAGE_PNG_TO_WEBP`) |
 | `--quality N` | `80` | JPEG/WebP compression quality (env: `TINYIMAGE_QUALITY`) |
-| `--sequential` | `false` | Disable multiprocessing, process images one by one |
-| `--show-config` | `false` | Display current configuration and exit |
-| `--soft-delete-original` | `false` | Move original files to trash (requires `send2trash`, mutually exclusive with `--delete-original`) |
-| `--watch` | `false` | Enable watch mode — monitor directory for changes and process automatically |
-| `--watch-interval N` | `3` | Watch mode polling interval in seconds (env: `TINYIMAGE_WATCH_INTERVAL`) |
+| `--sequential` | `False` | Disable multiprocessing, process images one by one |
+| `--show-config` | `False` | Display current configuration and exit |
+| `--soft-delete-original` | `False` | Move original files to trash (requires `send2trash`, mutually exclusive with `--delete-original`) |
 | `--suffix` | `[minify]` | Output filename suffix marker (env: `TINYIMAGE_SUFFIX`) |
 | `--webp-method N` | `6` | WebP compression method 0-6 (env: `TINYIMAGE_WEBP_METHOD`) |
 | `--webp-method-stream N` | `4` | ZIP in-memory WebP method 0-6 (env: `TINYIMAGE_WEBP_METHOD_STREAM`) |
-| `--workers N` | CPU count | Maximum parallel workers (env: `TINYIMAGE_WORKERS`, mutually exclusive with `--sequential`) |
+| `--watch` | `False` | Enable watch mode — monitor directory for changes and process automatically |
+| `--watch-interval N` | `3` | Watch mode polling interval in seconds (env: `TINYIMAGE_WATCH_INTERVAL`) |
+| `--workers N` | `os.cpu_count()` | Maximum parallel workers (env: `TINYIMAGE_WORKERS`, mutually exclusive with `--sequential`) |
 
 ### .env 配置
 

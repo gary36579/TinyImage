@@ -412,59 +412,98 @@ def _scan_directory(input_dir, img_exts, arc_exts, override, suffix):
 def _run_tasks(image_tasks, archive_tasks, output_dir, sequential, workers,
                png_to_webp, jpg_to_webp, quality, png_level, webp_method,
                jpeg_progressive, override, delete_original, soft_delete,
-               png_level_stream, webp_method_stream):
+               png_level_stream, webp_method_stream, progress_cb=None):
     total_bytes_orig = 0
     total_bytes_new = 0
     total_items = len(image_tasks) + len(archive_tasks)
+    use_tqdm = progress_cb is None
+
+    if not use_tqdm:
+        if not progress_cb("start", "", 0, total_items, 0, {}):
+            return total_bytes_orig, total_bytes_new
 
     if sequential:
-        with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
-            with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
-                for root, filename, rel_path in image_tasks:
-                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
+        if use_tqdm:
+            pbar = tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1)
+            status_bar = tqdm(total=1, bar_format='{desc}', position=0, leave=True)
+        try:
+            for _i, (root, filename, rel_path) in enumerate(image_tasks, 1):
+                input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
 
+                if use_tqdm:
                     status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+                elif not progress_cb("progress", rel_path, _i, total_items, 0, {}):
+                    break
 
-                    try:
-                        success, o, n, r, final_output_path = compress_image_file(input_path, output_path, png_to_webp,
-                                                                                  jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
-                        if success:
-                            final_filename = os.path.basename(final_output_path)
+                try:
+                    success, o, n, r, final_output_path = compress_image_file(input_path, output_path, png_to_webp,
+                                                                              jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
+                    if success:
+                        final_filename = os.path.basename(final_output_path)
+                        if use_tqdm:
                             tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
-                            total_bytes_orig += o
-                            total_bytes_new += n
-                            if delete_original or soft_delete:
-                                remove_file(input_path, soft_delete)
-                                label = "Moved to trash" if soft_delete else "Deleted"
+                        elif not progress_cb("file_done", rel_path, _i, total_items, 0, {"orig_size": o, "new_size": n, "pct": r, "final_filename": final_filename}):
+                            break
+                        total_bytes_orig += o
+                        total_bytes_new += n
+                        if delete_original or soft_delete:
+                            remove_file(input_path, soft_delete)
+                            label = "Moved to trash" if soft_delete else "Deleted"
+                            if use_tqdm:
                                 tqdm.write(f"{colorama.Fore.RED}       [{label}] {rel_path}{colorama.Style.RESET_ALL}")
-                        else:
+                            elif not progress_cb("file_delete", rel_path, _i, total_items, 0, {"label": label}):
+                                break
+                    else:
+                        if use_tqdm:
                             tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}")
-                    except Exception as exc:
+                        elif not progress_cb("file_done", rel_path, _i, total_items, 1, {}):
+                            break
+                except Exception as exc:
+                    if use_tqdm:
                         tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}: {exc}")
+                    elif not progress_cb("file_done", rel_path, _i, total_items, 1, {"error": str(exc)}):
+                        break
 
+                if use_tqdm:
                     pbar.update(1)
 
-                for root, filename, rel_path in archive_tasks:
+            for _i, (root, filename, rel_path) in enumerate(archive_tasks, len(image_tasks) + 1):
+                if use_tqdm:
                     status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-                    ext = os.path.splitext(filename)[1].lower()
-                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
+                elif not progress_cb("progress", rel_path, _i, total_items, 0, {}):
+                    break
+                ext = os.path.splitext(filename)[1].lower()
+                input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
 
-                    if ext == '.zip':
-                        o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality,
-                                                     png_level, webp_method, jpeg_progressive, png_level_stream, webp_method_stream)
-                        total_bytes_orig += o
-                        total_bytes_new += n
-                    elif ext == '.7z':
-                        o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
-                        total_bytes_orig += o
-                        total_bytes_new += n
+                if ext == '.zip':
+                    o, n = process_zip_in_memory(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality,
+                                                 png_level, webp_method, jpeg_progressive, png_level_stream, webp_method_stream)
+                    total_bytes_orig += o
+                    total_bytes_new += n
+                elif ext == '.7z':
+                    o, n = process_7z_with_tmp(input_path, output_path, None, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
+                    total_bytes_orig += o
+                    total_bytes_new += n
 
-                    if delete_original or soft_delete:
-                        remove_file(input_path, soft_delete)
-                        label = "Moved to trash" if soft_delete else "Deleted"
+                if delete_original or soft_delete:
+                    remove_file(input_path, soft_delete)
+                    label = "Moved to trash" if soft_delete else "Deleted"
+                    if use_tqdm:
                         tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+                    elif not progress_cb("file_delete", rel_path, _i, total_items, 0, {"label": label}):
+                        break
 
+                if use_tqdm:
                     pbar.update(1)
+
+                if not use_tqdm and not progress_cb("file_done", rel_path, _i, total_items, 0, {"is_archive": True}):
+                    break
+        finally:
+            if use_tqdm:
+                if pbar: pbar.close()
+                if status_bar: status_bar.close()
+            else:
+                progress_cb("complete", "", total_items, total_items, 0, {"total_orig": total_bytes_orig, "total_new": total_bytes_new})
     else:
         with ProcessPoolExecutor(max_workers=workers) as executor:
             future_to_file = {}
@@ -473,52 +512,89 @@ def _run_tasks(image_tasks, archive_tasks, output_dir, sequential, workers,
                 future = executor.submit(compress_image_file, input_path, output_path, png_to_webp, jpg_to_webp, quality, png_level, webp_method, jpeg_progressive)
                 future_to_file[future] = (rel_path, input_path)
 
-            with tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1) as pbar:
-                with tqdm(total=1, bar_format='{desc}', position=0, leave=True) as status_bar:
-                    for future in as_completed(future_to_file):
-                        rel_path, input_path = future_to_file[future]
+            if use_tqdm:
+                pbar = tqdm(total=total_items, desc="Total", unit="item", dynamic_ncols=True, ascii=" #", colour='cyan', bar_format='\033[32m{desc}: {percentage:3.0f}%\033[0m|{bar}|\033[90m {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\033[0m', position=1)
+                status_bar = tqdm(total=1, bar_format='{desc}', position=0, leave=True)
+            try:
+                done_count = 0
+                for future in as_completed(future_to_file):
+                    done_count += 1
+                    rel_path, input_path = future_to_file[future]
+
+                    if use_tqdm:
                         status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
+                    elif not progress_cb("progress", rel_path, done_count, total_items, 0, {}):
+                        break
 
-                        try:
-                            success, o, n, r, final_output_path = future.result()
+                    try:
+                        success, o, n, r, final_output_path = future.result()
 
-                            if success:
-                                final_filename = os.path.basename(final_output_path)
+                        if success:
+                            final_filename = os.path.basename(final_output_path)
+                            if use_tqdm:
                                 tqdm.write(f"  {colorama.Fore.GREEN}OK{colorama.Style.RESET_ALL}  {rel_path} -> {final_filename}  ({format_size(o)} -> {format_size(n)}, -{r:.1f}%)")
-                                total_bytes_orig += o
-                                total_bytes_new += n
-                                if delete_original or soft_delete:
-                                    remove_file(input_path, soft_delete)
-                                    label = "Moved to trash" if soft_delete else "Deleted"
+                            elif not progress_cb("file_done", rel_path, done_count, total_items, 0, {"orig_size": o, "new_size": n, "pct": r, "final_filename": final_filename}):
+                                break
+                            total_bytes_orig += o
+                            total_bytes_new += n
+                            if delete_original or soft_delete:
+                                remove_file(input_path, soft_delete)
+                                label = "Moved to trash" if soft_delete else "Deleted"
+                                if use_tqdm:
                                     tqdm.write(f"{colorama.Fore.RED}       [{label}] {rel_path}{colorama.Style.RESET_ALL}")
-                            else:
+                                elif not progress_cb("file_delete", rel_path, done_count, total_items, 0, {"label": label}):
+                                    break
+                        else:
+                            if use_tqdm:
                                 tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}")
-                        except Exception as exc:
+                            elif not progress_cb("file_done", rel_path, done_count, total_items, 1, {}):
+                                break
+                    except Exception as exc:
+                        if use_tqdm:
                             tqdm.write(f"  {colorama.Fore.RED}ERR{colorama.Style.RESET_ALL} {rel_path}: {exc}")
+                        elif not progress_cb("file_done", rel_path, done_count, total_items, 1, {"error": str(exc)}):
+                            break
 
+                    if use_tqdm:
                         pbar.update(1)
 
-                    for root, filename, rel_path in archive_tasks:
+                for _i, (root, filename, rel_path) in enumerate(archive_tasks, done_count + 1):
+                    if use_tqdm:
                         status_bar.set_description(f"{colorama.Fore.YELLOW}  Processing: {rel_path}{colorama.Style.RESET_ALL}")
-                        ext = os.path.splitext(filename)[1].lower()
-                        input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
+                    elif not progress_cb("progress", rel_path, _i, total_items, 0, {}):
+                        break
+                    ext = os.path.splitext(filename)[1].lower()
+                    input_path, output_path = _build_paths(root, filename, rel_path, output_dir, png_to_webp, jpg_to_webp)
 
-                        if ext == '.zip':
-                            o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality,
-                                                         png_level, webp_method, jpeg_progressive, png_level_stream, webp_method_stream)
-                            total_bytes_orig += o
-                            total_bytes_new += n
-                        elif ext == '.7z':
-                            o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
-                            total_bytes_orig += o
-                            total_bytes_new += n
+                    if ext == '.zip':
+                        o, n = process_zip_in_memory(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality,
+                                                     png_level, webp_method, jpeg_progressive, png_level_stream, webp_method_stream)
+                        total_bytes_orig += o
+                        total_bytes_new += n
+                    elif ext == '.7z':
+                        o, n = process_7z_with_tmp(input_path, output_path, executor, png_to_webp, jpg_to_webp, override, quality, png_level, webp_method, jpeg_progressive)
+                        total_bytes_orig += o
+                        total_bytes_new += n
 
-                        if delete_original or soft_delete:
-                            remove_file(input_path, soft_delete)
-                            label = "Moved to trash" if soft_delete else "Deleted"
+                    if delete_original or soft_delete:
+                        remove_file(input_path, soft_delete)
+                        label = "Moved to trash" if soft_delete else "Deleted"
+                        if use_tqdm:
                             tqdm.write(f"{colorama.Fore.RED}  [{label}] {rel_path}{colorama.Style.RESET_ALL}")
+                        elif not progress_cb("file_delete", rel_path, _i, total_items, 0, {"label": label}):
+                            break
 
+                    if use_tqdm:
                         pbar.update(1)
+
+                    if not use_tqdm and not progress_cb("file_done", rel_path, _i, total_items, 0, {"is_archive": True}):
+                        break
+            finally:
+                if use_tqdm:
+                    if pbar: pbar.close()
+                    if status_bar: status_bar.close()
+                else:
+                    progress_cb("complete", "", total_items, total_items, 0, {"total_orig": total_bytes_orig, "total_new": total_bytes_new})
 
     return total_bytes_orig, total_bytes_new
 
@@ -527,7 +603,7 @@ def _watch_loop(input_dir, output_dir, interval,
                 sequential, workers,
                 png_to_webp, jpg_to_webp, quality, png_level, webp_method,
                 jpeg_progressive, override, delete_original, soft_delete,
-                png_level_stream, webp_method_stream):
+                png_level_stream, webp_method_stream, progress_cb=None):
     print(f"\n{colorama.Fore.CYAN}Watch mode enabled. Monitoring '{input_dir}' every {interval}s...{colorama.Style.RESET_ALL}")
     print(f"{colorama.Fore.LIGHTBLACK_EX}Press Ctrl+C to stop.{colorama.Style.RESET_ALL}")
 
@@ -546,7 +622,7 @@ def _watch_loop(input_dir, output_dir, interval,
         _run_tasks(image_tasks, archive_tasks, output_dir, sequential, workers,
                    png_to_webp, jpg_to_webp, quality, png_level, webp_method,
                    jpeg_progressive, override, delete_original, soft_delete,
-                   png_level_stream, webp_method_stream)
+                   png_level_stream, webp_method_stream, progress_cb=progress_cb)
 
     tracked = {}
     for root, dirs, files in os.walk(input_dir):
@@ -608,7 +684,7 @@ def _watch_loop(input_dir, output_dir, interval,
                 _run_tasks(delta_images, delta_archives, output_dir, sequential, workers,
                            png_to_webp, jpg_to_webp, quality, png_level, webp_method,
                            jpeg_progressive, override, delete_original, soft_delete,
-                           png_level_stream, webp_method_stream)
+                           png_level_stream, webp_method_stream, progress_cb=progress_cb)
 
             tracked = current
         finally:
@@ -648,6 +724,7 @@ def main():
     parser.add_argument('--webp-method-stream', type=int, default=None, help="ZIP in-memory WebP method 0-6 (env: TINYIMAGE_WEBP_METHOD_STREAM, default: 4)")
     parser.add_argument('--watch', action='store_true', default=False, help="Enable watch mode - monitor directory for changes and process automatically")
     parser.add_argument('--watch-interval', type=int, default=None, help="Watch mode polling interval in seconds (env: TINYIMAGE_WATCH_INTERVAL, default: 3)")
+    parser.add_argument('--gui', action='store_true', default=False, help="Launch graphical user interface")
 
     args = parser.parse_args()
 
@@ -704,6 +781,11 @@ def main():
             output_dir = '.'
 
     watch_interval = args.watch_interval if args.watch_interval is not None else _env_int('TINYIMAGE_WATCH_INTERVAL', 3)
+
+    if args.gui:
+        from gui.gui import main as gui_main
+        gui_main()
+        return
 
     if args.show_config:
         def _source(label, value, cli_test=None, env_key=None):
